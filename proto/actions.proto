@@ -1,0 +1,25 @@
+syntax = "proto3";
+package actions;
+
+service Controller{
+    rpc Start (StartRequest) returns (OpResponce);
+    rpc Stop  (StopRequest ) returns (OpResponce);
+}
+
+message StartRequest {
+    string token = 1;
+}
+
+message StopRequest {
+    string token = 1;
+}
+
+enum OpResult{
+    Success = 0;
+    Fail = 1;
+    Denied = 2;
+}
+
+message OpResponce{
+    OpResult result = 1;
+}
