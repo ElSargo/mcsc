@@ -1,4 +1,4 @@
-#[allow(dead_code, unused_variables)]
+#![allow(dead_code, unused_variables)]
 use tonic::{transport::Server, Request, Response, Status};
 
 use actions::controller_server::{Controller, ControllerServer};
@@ -13,8 +13,13 @@ pub mod actions {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let root = std::path::Path::new("/home/oliver/minecraft_server_controller/minecraft");
-    assert!(std::env::set_current_dir(&root).is_ok());
+    let cwd = std::env::current_dir().expect("Couldn't load current working directory");
+    let mcdir = std::path::Path::new("minecraft");
+    let mut wdir = cwd.to_path_buf();
+    wdir.push(mcdir);
+    println!("Attempting to change wdir to {:?}", wdir);
+    println!("wdir changed succesfully");
+    std::env::set_current_dir(&wdir).expect("Unable to set workingdir");
     let addy = "[::1]:50051".parse()?;
     let cs = ControllerService::default();
     Server::builder()
@@ -62,18 +67,18 @@ impl Controller for ControllerService {
     }
 }
 
-static mut STATE: Option<Child> = None;
+static mut MINECRAFT_SERVER_STATE: Option<Child> = None;
 
 fn poll() -> bool {
     unsafe {
-        match &mut STATE {
+        match &mut MINECRAFT_SERVER_STATE {
             Some(c) => {
                 let res = c.try_wait();
                 match res {
                     Ok(bruh) => match bruh {
                         Some(_) => {
                             //Procces finished
-                            STATE = None;
+                            MINECRAFT_SERVER_STATE = None;
                             false
                         }
                         //Procces running
@@ -100,22 +105,25 @@ fn start() -> Result<(), Box<dyn Error>> {
         .arg("nogui")
         .spawn()?;
     unsafe {
-        STATE = Some(child);
-        println!("{:?}", STATE);
+        MINECRAFT_SERVER_STATE = Some(child);
+        println!("{:?}", MINECRAFT_SERVER_STATE);
     }
     Ok(())
 }
 
 fn stop() -> Result<(), Box<dyn Error>> {
     unsafe {
-        match &mut STATE {
+        match &mut MINECRAFT_SERVER_STATE {
             Some(child) => {
                 let c_stdin = child.stdin.as_mut();
                 match c_stdin {
                     Some(buff) => {
                         buff.write_all(b"stop\n")?;
-                        STATE = None;
-                        child.wait();
+                        MINECRAFT_SERVER_STATE = None;
+                        match child.wait() {
+                            Ok(_) => {}
+                            Err(_) => {}
+                        }
                         ()
                     }
                     None => {
@@ -129,4 +137,18 @@ fn stop() -> Result<(), Box<dyn Error>> {
     }
     print!("stop");
     Ok(())
+}
+
+static mut WORLD_DOWNLOADER_STATE: bool = false;
+
+fn poll_wdl() -> bool {
+    unsafe {
+        return WORLD_DOWNLOADER_STATE;
+    }
+}
+
+fn set_wdl(status: bool) {
+    unsafe {
+        WORLD_DOWNLOADER_STATE = status;
+    }
 }
