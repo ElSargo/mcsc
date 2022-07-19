@@ -4,6 +4,7 @@ package actions;
 service Controller{
     rpc Start (StartRequest) returns (OpResponce);
     rpc Stop  (StopRequest ) returns (OpResponce);
+    rpc Download (DownloadRequest) returns (WorldDownload);
 }
 
 message StartRequest {
@@ -12,6 +13,14 @@ message StartRequest {
 
 message StopRequest {
     string token = 1;
+}
+
+message DownloadRequest{
+    string token = 1;
+}
+
+message WorldDownload{
+    bytes data = 1;
 }
 
 enum OpResult{
