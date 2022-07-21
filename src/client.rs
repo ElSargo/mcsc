@@ -3,11 +3,12 @@ pub mod actions {
 }
 
 use actions::controller_client::ControllerClient;
-use actions::{DownloadRequest, StartRequest, StopRequest};
-use security::encrypt;
+use actions::{AuthRequest, DownloadRequest, OpResponce, StartRequest, StopRequest};
+use security::decrypt;
 use std::fs;
 use std::thread::sleep;
 use std::time::Duration;
+use tonic::Response;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,32 +20,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .read_line(&mut input)
         .expect("Did not enter a correct string");
 
-    let responce;
+    let responce: Response<OpResponce>;
 
     match input.as_str() {
         "Start\n" => {
             let mut client = ControllerClient::connect("http://[::1]:50051").await?;
+            let key = client.auth(AuthRequest {}).await?.into_inner();
             let request = StartRequest {
-                token: encrypt("Thats cauze all my niggas in:".to_owned()),
+                token: decrypt(key.data).expect("Client side auth error occured"),
             };
             responce = client.start(request).await?;
         }
 
         "Stop\n" => {
             let mut client = ControllerClient::connect("http://[::1]:50051").await?;
+            let key = client.auth(AuthRequest {}).await?.into_inner();
             let request = StopRequest {
-                token: encrypt("Thats cauze all my niggas in:".to_owned()),
+                token: decrypt(key.data).expect("Client side auth error occured"),
             };
             responce = client.stop(request).await?;
         }
 
         "Download\n" => {
-            let mut client = ControllerClient::connect("http://[::1]:50051").await?;
+            let mut client = ControllerClient::connect(security::ADDRES).await?;
+            let key = client.auth(AuthRequest {}).await?.into_inner();
             let request = DownloadRequest {
-                token: encrypt("Thats cauze all my niggas in:".to_owned()),
+                token: decrypt(key.data).expect("Client side auth error occured"),
             };
             let file = client.download(request).await?.into_inner().data;
             fs::write("worldbackup.tar.gz", file)?;
+            let working_directory = std::env::current_dir();
+            match working_directory {
+                Ok(wdir) => println!("Saved as {:?} worldbackup.tar.gz", wdir),
+                Err(_) => println!("Download saved as worldbackup.tar.gz"),
+            }
             return Ok(());
         }
 
@@ -54,8 +63,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             panic!("");
         }
     }
-    let success = responce.into_inner().result;
-    match success {
+    let success = responce.into_inner();
+    match success.result {
         0 => {
             println!("Great succes!")
         }
@@ -69,6 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("WTF man");
         }
     }
+    println!("{}", success.comment);
 
     sleep(Duration::from_secs(1));
     Ok(())
@@ -76,6 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 mod security {
     use magic_crypt::{new_magic_crypt, MagicCrypt256, MagicCryptTrait};
+    pub const ADDRES: &str = "http://[::1]:50051";
     static mut CRYPT: Option<MagicCrypt256> = None;
     pub fn init() {
         unsafe {
@@ -83,15 +94,15 @@ mod security {
         }
     }
 
-    pub fn encrypt(txt: String) -> String {
+    pub fn decrypt(data: Vec<u8>) -> Result<Vec<u8>, magic_crypt::MagicCryptError> {
         unsafe {
             match &CRYPT {
                 Some(key) => {
-                    return key.encrypt_str_to_base64(txt);
+                    return Ok(key.decrypt_bytes_to_bytes(&data)?);
                 }
                 None => {
                     init();
-                    return encrypt(txt);
+                    return decrypt(data);
                 }
             }
         }
