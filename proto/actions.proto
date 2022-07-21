@@ -5,18 +5,25 @@ service Controller{
     rpc Start (StartRequest) returns (OpResponce);
     rpc Stop  (StopRequest ) returns (OpResponce);
     rpc Download (DownloadRequest) returns (WorldDownload);
+    rpc Auth (AuthRequest) returns (AuthKey);
+}
+
+message AuthRequest{}
+
+message AuthKey{
+    bytes data = 1;
 }
 
 message StartRequest {
-    string token = 1;
+    bytes token = 1;
 }
 
 message StopRequest {
-    string token = 1;
+    bytes token = 1;
 }
 
 message DownloadRequest{
-    string token = 1;
+    bytes token = 1;
 }
 
 message WorldDownload{
@@ -31,4 +38,5 @@ enum OpResult{
 
 message OpResponce{
     OpResult result = 1;
+    string comment = 2;
 }
