@@ -2,51 +2,62 @@ syntax = "proto3";
 package actions;
 
 service Controller{
-    rpc Start (StartRequest) returns (OpResponce);
-    rpc Stop  (StopRequest ) returns (OpResponce);
-    rpc Download (DownloadRequest) returns (WorldDownload);
-    rpc Auth (AuthRequest) returns (AuthKey);
+  rpc Start    (StartRequest   ) returns (OpResponce   );
+  rpc Stop     (StopRequest    ) returns (OpResponce   );
+  rpc Command  (CommandRequest ) returns (OpResponce   );
+  rpc Download (DownloadRequest) returns (WorldDownload);
+  rpc Auth     (AuthRequest    ) returns (AuthResponce );
 }
 
-message AuthKey{
-    bytes data = 1;
+message AuthResponce{
+  OpResult result = 1;
+  string comment = 2;
+  bytes key = 3;
 }
 
 message StartRequest {
-    bytes token = 1;
+  bytes token = 1;
 }
 
 message StopRequest {
-    bytes token = 1;
+  bytes token = 1;
 }
 
 message DownloadRequest{
-    bytes token = 1;
+  bytes token = 1;
+}
+
+message CommandRequest{
+  string command = 1;
+  bytes token = 2;
+}
+ 
+enum OpResult{
+  Success = 0;
+  Fail = 1;
+  Denied = 2;
 }
 
 message WorldDownload{
-    bytes data = 1;
-}
-
-enum OpResult{
-    Success = 0;
-    Fail = 1;
-    Denied = 2;
+  OpResult result = 1;
+  string comment = 2;
+  bytes data = 3;
 }
 
 
 message OpResponce{
-    OpResult result = 1;
-    string comment = 2;
+  OpResult result = 1;
+  string comment = 2;
 }
 
 enum AuthAction{
-    Start = 0;
-    Stop = 1;
-    Download = 2;
+  Start = 0;
+  Stop = 1;
+  Command = 2;
+  Download = 3;
 }
 
 
 message AuthRequest{
-    AuthAction action = 1;
+  AuthAction action = 1;
 }
