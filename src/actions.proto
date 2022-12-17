@@ -2,11 +2,12 @@ syntax = "proto3";
 package actions;
 
 service Controller{
-  rpc Start    (StartRequest   ) returns (OpResponce   );
-  rpc Stop     (StopRequest    ) returns (OpResponce   );
-  rpc Command  (CommandRequest ) returns (OpResponce   );
-  rpc Download (DownloadRequest) returns (WorldDownload);
-  rpc Auth     (AuthRequest    ) returns (AuthResponce );
+  rpc Start    ( StartRequest    ) returns ( OpResponce    );
+  rpc Stop     ( StopRequest     ) returns ( OpResponce    );
+  rpc Command  ( CommandRequest  ) returns ( OpResponce    );
+  rpc Download ( DownloadRequest ) returns ( WorldDownload );
+  rpc Backup   ( BackupRequest   ) returns ( OpResponce    );
+  rpc Auth     ( AuthRequest     ) returns ( AuthResponce  );
 }
 
 message AuthResponce{
@@ -24,6 +25,11 @@ message StopRequest {
 }
 
 message DownloadRequest{
+  bytes token = 1;
+}
+
+
+message BackupRequest {
   bytes token = 1;
 }
 

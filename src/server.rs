@@ -13,6 +13,7 @@ pub mod actions {
 mod common;
 
 use common::Actions;
+
 #[derive(Eq, Clone, Hash, PartialEq)]
 pub enum OpResult {
     Success = 0,
