@@ -307,42 +307,15 @@ mod server_managing {
     }
 
     impl ServerState {
-        pub fn wdl(&mut self) -> Result<Vec<u8>, DownloadError> {
-            println!("Starting world download");
-            // Send world-file to client
-            use std::error::Error;
-            use std::process::Command;
-
-            use crate::server_managing::ServerState;
-
-            match self {
-                Idle => {
-                    *self = Downloading;
-                    // Compress the file
-                    match Command::new("tar")
-                        .arg("-czf")
-                        .arg("worldupload.tar.gz")
-                        .arg("world")
-                        .spawn()
-                    {
-                        Ok(mut child) => {
-                            if let Err(_) = child.wait() {
-                                return Err(DownloadError::Compression);
-                            }
-                        }
-                        Err(_) => {
-                            return Err(DownloadError::Compression);
-                        }
+        pub fn check_stop(&mut self) {
+            if let Running { procces: c } = self {
+                let res = c.try_wait();
+                if let Ok(possible_exit_code) = res {
+                    if let Some(_exit_code) = possible_exit_code {
+                        //Procces finished
+                        *self = Idle;
                     }
-                    let data = match std::fs::read("worldupload.tar.gz") {
-                        Ok(data) => data,
-                        Err(_) => return Err(DownloadError::FSReadError),
-                    };
-                    *self = Idle;
-                    Ok(data)
                 }
-                Running { procces: _ } => Err(DownloadError::ServerRunning),
-                Downloading => Err(DownloadError::OtherDownload),
             }
         }
 
@@ -360,6 +333,28 @@ mod server_managing {
                 }
                 Idle => Err(CommandError::Idle),
                 Downloading => Err(CommandError::Downloading),
+            }
+        }
+
+        /// Spawn a new java procces and store it in MINECRAFT_SERVER_STATE
+        pub fn start(&mut self) -> Result<(), StartError> {
+            self.check_stop();
+            match self {
+                Idle => {
+                    let child = match Command::new("sh")
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .arg("launch.sh")
+                        .spawn()
+                    {
+                        Ok(child) => child,
+                        Err(c) => return Err(StartError::Launch),
+                    };
+                    *self = Running { procces: child };
+                    Ok(())
+                }
+                Downloading => Err(StartError::Downloading),
+                Running { procces: _ } => Err(StartError::AlreadyRunning),
             }
         }
 
@@ -393,37 +388,41 @@ mod server_managing {
             }
         }
 
-        /// Spawn a new java procces and store it in MINECRAFT_SERVER_STATE
-        pub fn start(&mut self) -> Result<(), StartError> {
-            self.check_stop();
+        pub fn wdl(&mut self) -> Result<Vec<u8>, DownloadError> {
+            println!("Starting world download");
+            // Send world-file to client
+            use std::process::Command;
+
+            use crate::server_managing::ServerState;
+
             match self {
                 Idle => {
-                    let child = match Command::new("sh")
-                        .stdin(Stdio::piped())
-                        .stdout(Stdio::piped())
-                        .arg("launch.sh")
+                    *self = Downloading;
+                    // Compress the file
+                    match Command::new("tar")
+                        .arg("-czf")
+                        .arg("worldupload.tar.gz")
+                        .arg("world")
                         .spawn()
                     {
-                        Ok(child) => child,
-                        Err(c) => return Err(StartError::Launch),
-                    };
-                    *self = Running { procces: child };
-                    Ok(())
-                }
-                Downloading => Err(StartError::Downloading),
-                Running { procces: _ } => Err(StartError::AlreadyRunning),
-            }
-        }
-
-        pub fn check_stop(&mut self) {
-            if let Running { procces: c } = self {
-                let res = c.try_wait();
-                if let Ok(possible_exit_code) = res {
-                    if let Some(_exit_code) = possible_exit_code {
-                        //Procces finished
-                        *self = Idle;
+                        Ok(mut child) => {
+                            if let Err(_) = child.wait() {
+                                return Err(DownloadError::Compression);
+                            }
+                        }
+                        Err(_) => {
+                            return Err(DownloadError::Compression);
+                        }
                     }
+                    let data = match std::fs::read("worldupload.tar.gz") {
+                        Ok(data) => data,
+                        Err(_) => return Err(DownloadError::FSReadError),
+                    };
+                    *self = Idle;
+                    Ok(data)
                 }
+                Running { procces: _ } => Err(DownloadError::ServerRunning),
+                Downloading => Err(DownloadError::OtherDownload),
             }
         }
     }
