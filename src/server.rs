@@ -129,8 +129,8 @@ impl Controller for ControllerService {
         }) {
             return respond(OpResult::Denied, "Invalid token");
         }
-        let mut state = match STATE.lock(){
-          Ok(lock )=> lock,  
+        let mut state = match STATE.lock() {
+            Ok(lock) => lock,
             Err(_) => return respond(OpResult::Fail, "Lock not aquired"),
         };
         let res = state.run_command(&req.command);
@@ -166,9 +166,15 @@ impl Controller for ControllerService {
         }) {
             return Err(Status::new(tonic::Code::InvalidArgument, "Invalid token"));
         }
-        let mut state = match STATE.lock(){
-          Ok(lock )=> lock,  
-            Err(_) => return Ok(Response::new(WorldDownload { result: OpResult::Fail.code(), comment: "Lock poisned".to_string(), data: Vec::new()})),
+        let mut state = match STATE.lock() {
+            Ok(lock) => lock,
+            Err(_) => {
+                return Ok(Response::new(WorldDownload {
+                    result: OpResult::Fail.code(),
+                    comment: "Lock poisned".to_string(),
+                    data: Vec::new(),
+                }))
+            }
         };
         let world_bytes = state.wdl();
         match world_bytes {
@@ -234,8 +240,8 @@ impl Controller for ControllerService {
         }
 
         println!("Start request recived");
-        let mut state = match STATE.lock(){
-          Ok(lock )=> lock,  
+        let mut state = match STATE.lock() {
+            Ok(lock) => lock,
             Err(_) => return respond(OpResult::Fail, "Lock not aquired"),
         };
         let res = state.start();
@@ -247,7 +253,9 @@ impl Controller for ControllerService {
             Err(start_error) => match start_error {
                 StartError::Launch => respond(OpResult::Fail, "Failed to launch server"),
                 StartError::AlreadyRunning => respond(OpResult::Fail, "Server already running"),
-                StartError::Downloading => respond(OpResult::Fail, "Download in proggress! Can't start"),
+                StartError::Downloading => {
+                    respond(OpResult::Fail, "Download in proggress! Can't start")
+                }
             },
         }
     }
@@ -262,8 +270,8 @@ impl Controller for ControllerService {
         }) {
             return respond(OpResult::Denied, "Invalid token");
         }
-        let mut state = match STATE.lock(){
-          Ok(lock )=> lock,  
+        let mut state = match STATE.lock() {
+            Ok(lock) => lock,
             Err(_) => return respond(OpResult::Fail, "Lock not aquired"),
         };
         println!("Stop request recived");
@@ -284,217 +292,214 @@ impl Controller for ControllerService {
     }
 }
 
+#[derive(Debug)]
+pub enum ServerState {
+    Idle,
+    Running { procces: Child },
+    Downloading,
+}
 
-    #[derive(Debug)]
-    pub enum ServerState {
-        Idle,
-        Running { procces: Child },
-        Downloading,
+#[derive(Debug)]
+pub enum StopError {
+    Idle,
+    Downloading,
+    ProccesError,
+}
+
+#[derive(Debug)]
+pub enum StartError {
+    Launch,
+    AlreadyRunning,
+    Downloading,
+}
+
+#[derive(Debug)]
+pub enum DownloadError {
+    ServerRunning,
+    OtherDownload,
+    FSReadError,
+    Compression,
+}
+
+#[derive(Debug)]
+pub enum CommandError {
+    Idle,
+    Downloading,
+    ProccesError,
+}
+
+impl ServerState {
+    pub fn check_stop(&mut self) {
+        if let Running { procces: c } = self {
+            let res = c.try_wait();
+            if let Ok(possible_exit_code) = res {
+                if let Some(_exit_code) = possible_exit_code {
+                    //Procces finished
+                    *self = Idle;
+                }
+            }
+        }
     }
 
-    #[derive(Debug)]
-    pub enum StopError {
-        Idle,
-        Downloading,
-        ProccesError,
+    pub fn run_command(&mut self, cmd: &str) -> Result<(), CommandError> {
+        match self {
+            Running { procces } => {
+                let pstdin = procces.stdin.as_mut();
+                match pstdin {
+                    Some(buff) => match buff.write_all(&format!("\n{}\n", cmd).into_bytes()) {
+                        Err(_) => Err(CommandError::ProccesError),
+                        _ => Ok(()),
+                    },
+                    None => Err(CommandError::ProccesError),
+                }
+            }
+            Idle => Err(CommandError::Idle),
+            Downloading => Err(CommandError::Downloading),
+        }
     }
 
-    #[derive(Debug)]
-    pub enum StartError {
-        Launch,
-        AlreadyRunning,
-        Downloading,
+    /// Spawn a new java procces and store it in MINECRAFT_SERVER_STATE
+    pub fn start(&mut self) -> Result<(), StartError> {
+        self.check_stop();
+        match self {
+            Idle => {
+                let child = match Command::new("sh")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .arg("launch.sh")
+                    .spawn()
+                {
+                    Ok(child) => child,
+                    Err(_c) => return Err(StartError::Launch),
+                };
+                *self = Running { procces: child };
+                Ok(())
+            }
+            Downloading => Err(StartError::Downloading),
+            Running { procces: _ } => Err(StartError::AlreadyRunning),
+        }
     }
 
-    #[derive(Debug)]
-    pub enum DownloadError {
-        ServerRunning,
-        OtherDownload,
-        FSReadError,
-        Compression,
-    }
-
-    #[derive(Debug)]
-    pub enum CommandError {
-        Idle,
-        Downloading,
-        ProccesError,
-    }
-
-    impl ServerState {
-        pub fn check_stop(&mut self) {
-            if let Running { procces: c } = self {
-                let res = c.try_wait();
-                if let Ok(possible_exit_code) = res {
-                    if let Some(_exit_code) = possible_exit_code {
-                        //Procces finished
+    /// Stop the running procces by entering stop into the stdin
+    pub fn stop(&mut self) -> Result<(), StopError> {
+        self.check_stop();
+        match self {
+            Running { procces: child } => {
+                let child_input = child.stdin.as_mut();
+                match child_input {
+                    Some(buff) => {
+                        match buff.write_all(b"\nstop\n") {
+                            Err(_) => return Err(StopError::ProccesError),
+                            _ => {}
+                        };
+                        match child.wait() {
+                            Ok(_) => {}
+                            Err(_) => {}
+                        }
                         *self = Idle;
+                        Ok(())
+                    }
+                    None => {
+                        println!("Unable to stop minecraft server");
+                        Err(StopError::ProccesError)
                     }
                 }
             }
+            Downloading => Err(StopError::Downloading),
+            Idle => Err(StopError::Idle),
         }
+    }
 
-        pub fn run_command(&mut self, cmd: &str) -> Result<(), CommandError> {
-            match self {
-                Running { procces } => {
-                    let pstdin = procces.stdin.as_mut();
-                    match pstdin {
-                        Some(buff) => match buff.write_all(&format!("\n{}\n", cmd).into_bytes()) {
-                            Err(_) => Err(CommandError::ProccesError),
-                            _ => Ok(()),
-                        },
-                        None => Err(CommandError::ProccesError),
-                    }
-                }
-                Idle => Err(CommandError::Idle),
-                Downloading => Err(CommandError::Downloading),
-            }
-        }
-
-        /// Spawn a new java procces and store it in MINECRAFT_SERVER_STATE
-        pub fn start(&mut self) -> Result<(), StartError> {
-            self.check_stop();
-            match self {
-                Idle => {
-                    let child = match Command::new("sh")
-                        .stdin(Stdio::piped())
-                        .stdout(Stdio::piped())
-                        .arg("launch.sh")
-                        .spawn()
-                    {
-                        Ok(child) => child,
-                        Err(_c) => return Err(StartError::Launch),
-                    };
-                    *self = Running { procces: child };
-                    Ok(())
-                }
-                Downloading => Err(StartError::Downloading),
-                Running { procces: _ } => Err(StartError::AlreadyRunning),
-            }
-        }
-
-        /// Stop the running procces by entering stop into the stdin
-        pub fn stop(&mut self) -> Result<(), StopError> {
-            self.check_stop();
-            match self {
-                Running { procces: child } => {
-                    let child_input = child.stdin.as_mut();
-                    match child_input {
-                        Some(buff) => {
-                            match buff.write_all(b"\nstop\n") {
-                                Err(_) => return Err(StopError::ProccesError),
-                                _ => {}
-                            };
-                            match child.wait() {
-                                Ok(_) => {}
-                                Err(_) => {}
-                            }
-                            *self = Idle;
-                            Ok(())
-                        }
-                        None => {
-                            println!("Unable to stop minecraft server");
-                            Err(StopError::ProccesError)
-                        }
-                    }
-                }
-                Downloading => Err(StopError::Downloading),
-                Idle => Err(StopError::Idle),
-            }
-        }
-
-        pub fn wdl(&mut self) -> Result<Vec<u8>, DownloadError> {
-            println!("Starting world download");
-            // Send world-file to client
-            match self {
-                Idle => {
-                    *self = Downloading;
-                    // Compress the file
-                    match Command::new("tar")
-                        .arg("-czf")
-                        .arg("worldupload.tar.gz")
-                        .arg("world")
-                        .spawn()
-                    {
-                        Ok(mut child) => {
-                            if let Err(_) = child.wait() {
-                                return Err(DownloadError::Compression);
-                            }
-                        }
-                        Err(_) => {
+    pub fn wdl(&mut self) -> Result<Vec<u8>, DownloadError> {
+        println!("Starting world download");
+        // Send world-file to client
+        match self {
+            Idle => {
+                *self = Downloading;
+                // Compress the file
+                match Command::new("tar")
+                    .arg("-czf")
+                    .arg("worldupload.tar.gz")
+                    .arg("world")
+                    .spawn()
+                {
+                    Ok(mut child) => {
+                        if let Err(_) = child.wait() {
                             return Err(DownloadError::Compression);
                         }
                     }
-                    let data = match std::fs::read("worldupload.tar.gz") {
-                        Ok(data) => data,
-                        Err(_) => return Err(DownloadError::FSReadError),
-                    };
-                    *self = Idle;
-                    Ok(data)
+                    Err(_) => {
+                        return Err(DownloadError::Compression);
+                    }
                 }
-                Running { procces: _ } => Err(DownloadError::ServerRunning),
-                Downloading => Err(DownloadError::OtherDownload),
+                let data = match std::fs::read("worldupload.tar.gz") {
+                    Ok(data) => data,
+                    Err(_) => return Err(DownloadError::FSReadError),
+                };
+                *self = Idle;
+                Ok(data)
             }
+            Running { procces: _ } => Err(DownloadError::ServerRunning),
+            Downloading => Err(DownloadError::OtherDownload),
         }
     }
+}
 
-
-    use std::io::Write;
-    use std::process::{Child, Command, Stdio};
-    use ServerState::*;
-    /// Contains the current procces of the minecraft server and it's stdin
-    pub static STATE: Mutex<ServerState> = Mutex::new(Idle);
+use std::io::Write;
+use std::process::{Child, Command, Stdio};
+use ServerState::*;
+/// Contains the current procces of the minecraft server and it's stdin
+pub static STATE: Mutex<ServerState> = Mutex::new(Idle);
 
 lazy_static! {
     static ref CONFIG: crate::Config = crate::config_load();
 }
 
-    use magic_crypt::{new_magic_crypt, MagicCrypt256, MagicCryptTrait};
-    use rand::prelude::*;
-    use std::{collections::HashSet, sync::Mutex};
-    lazy_static! {
-        static ref CRYPT: MagicCrypt256 = new_magic_crypt!(CONFIG.key.clone(), 256);
-        static ref SOCKET: String = CONFIG.socket.clone();
-        static ref KEY: String = CONFIG.key.clone();
-        static ref KEYS: Mutex<HashSet<Key>> = Mutex::new(HashSet::new());
-    }
-    const KEY_BYTES: usize = 256;
+use magic_crypt::{new_magic_crypt, MagicCrypt256, MagicCryptTrait};
+use rand::prelude::*;
+use std::{collections::HashSet, sync::Mutex};
+lazy_static! {
+    static ref CRYPT: MagicCrypt256 = new_magic_crypt!(CONFIG.key.clone(), 256);
+    static ref SOCKET: String = CONFIG.socket.clone();
+    static ref KEY: String = CONFIG.key.clone();
+    static ref KEYS: Mutex<HashSet<Key>> = Mutex::new(HashSet::new());
+}
+const KEY_BYTES: usize = 256;
 
-    #[derive(Eq, Clone, Hash, PartialEq, Debug)]
-    pub struct Key {
-        pub action: Actions,
-        pub key: Vec<u8>,
-    }
+#[derive(Eq, Clone, Hash, PartialEq, Debug)]
+pub struct Key {
+    pub action: Actions,
+    pub key: Vec<u8>,
+}
 
-    pub fn encrypt(data: Vec<u8>) -> Vec<u8> {
-        CRYPT.encrypt_bytes_to_bytes(&data)
-    }
+pub fn encrypt(data: Vec<u8>) -> Vec<u8> {
+    CRYPT.encrypt_bytes_to_bytes(&data)
+}
 
-    /// Generate some some random bytes for authentification
-    fn gen_bytes() -> Vec<u8> {
-        let mut rng = thread_rng();
-        let mut bytes: Vec<u8> = Vec::with_capacity(KEY_BYTES);
-        for _ in 0..KEY_BYTES {
-            bytes.push(rng.gen());
-        }
-        bytes
+/// Generate some some random bytes for authentification
+fn gen_bytes() -> Vec<u8> {
+    let mut rng = thread_rng();
+    let mut bytes: Vec<u8> = Vec::with_capacity(KEY_BYTES);
+    for _ in 0..KEY_BYTES {
+        bytes.push(rng.gen());
     }
+    bytes
+}
 
-    /// Create a new key to give to our client, we will store it so it can be verified later
-    pub fn gen_key(action: Actions) -> Vec<u8> {
-        // Keys must be initialised before use
-        let mut set = KEYS.lock().expect("Mutex poisoned");
-        let bytes = gen_bytes();
-        set.insert(Key {
-            key: bytes.clone(),
-            action,
-        });
-        bytes
-    }
-    /// Check that a key has been authored by us
-    pub fn verify_key(key: Key) -> bool {
-        let mut set = KEYS.lock().expect("Mutex poisend");
-        let res = set.remove(&key);
-        res
-    }
-
+/// Create a new key to give to our client, we will store it so it can be verified later
+pub fn gen_key(action: Actions) -> Vec<u8> {
+    // Keys must be initialised before use
+    let mut set = KEYS.lock().expect("Mutex poisoned");
+    let bytes = gen_bytes();
+    set.insert(Key {
+        key: bytes.clone(),
+        action,
+    });
+    bytes
+}
+/// Check that a key has been authored by us
+pub fn verify_key(key: Key) -> bool {
+    let mut set = KEYS.lock().expect("Mutex poisend");
+    let res = set.remove(&key);
+    res
+}
