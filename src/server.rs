@@ -98,8 +98,8 @@ impl Controller for ControllerService {
                 }));
             }
         };
-        let key = security::gen_key(action);
-        let encypted_key = security::encrypt(key);
+        let key = gen_key(action);
+        let encypted_key = encrypt(key);
         let result = OpResult::Success.code();
         Ok(Response::new(AuthResponce {
             result,
@@ -110,7 +110,7 @@ impl Controller for ControllerService {
 
     async fn backup(&self, req: Request<BackupRequest>) -> Result<Response<OpResponce>, Status> {
         let key = req.into_inner().token;
-        if !security::verify_key(security::Key {
+        if !verify_key(Key {
             key,
             action: Actions::Download,
         }) {
@@ -123,26 +123,28 @@ impl Controller for ControllerService {
     async fn command(&self, req: Request<CommandRequest>) -> Result<Response<OpResponce>, Status> {
         let req = req.into_inner();
         let key = req.token;
-        use security::{verify_key, Key};
         if !verify_key(Key {
             key,
             action: Actions::Command,
         }) {
             return respond(OpResult::Denied, "Invalid token");
         }
-        let mut state = server_managing::STATE.lock();
+        let mut state = match STATE.lock(){
+          Ok(lock )=> lock,  
+            Err(_) => return respond(OpResult::Fail, "Lock not aquired"),
+        };
         let res = state.run_command(&req.command);
         match res {
             Err(command_error) => {
                 match command_error{
-                Idle => {
-                    respond(OpResult::Fail, "Server stopped, comamnd can't be run")
+                    CommandError::Idle => {
+                        respond(OpResult::Fail, "Server stopped, comamnd can't be run")
                     },
-                Download => {
-                    respond(OpResult::Fail, "Download in progress! Comamnd can't be run")
+                    CommandError::Downloading=> {
+                        respond(OpResult::Fail, "Download in progress! Comamnd can't be run")
                     },
-                ProccesError => {
-                    respond(OpResult::Fail, "Error running command on procces")
+                    CommandError::ProccesError => {
+                        respond(OpResult::Fail, "Error running command on procces")
                     },
                 }
             }
@@ -158,13 +160,16 @@ impl Controller for ControllerService {
         req: Request<DownloadRequest>,
     ) -> Result<Response<WorldDownload>, Status> {
         let key = req.into_inner().token;
-        if !security::verify_key(security::Key {
+        if !verify_key(Key {
             key,
             action: Actions::Download,
         }) {
             return Err(Status::new(tonic::Code::InvalidArgument, "Invalid token"));
         }
-        let mut state = server_managing::STATE.lock();
+        let mut state = match STATE.lock(){
+          Ok(lock )=> lock,  
+            Err(_) => return Ok(Response::new(WorldDownload { result: OpResult::Fail.code(), comment: "Lock poisned".to_string(), data: Vec::new()})),
+        };
         let world_bytes = state.wdl();
         match world_bytes {
             Ok(data) => {
@@ -177,8 +182,8 @@ impl Controller for ControllerService {
                 println!("Download succesful");
                 Ok(Response::new(wdl))
             }
-            Err(downloaderror) => match downloaderror {
-                ServerRunning => {
+            Err(download_error) => match download_error {
+                DownloadError::ServerRunning => {
                     let result = OpResult::Fail.code();
                     let wdl = WorldDownload {
                         data: Vec::new(),
@@ -187,7 +192,7 @@ impl Controller for ControllerService {
                     };
                     Ok(Response::new(wdl))
                 }
-                OtherDownload => {
+                DownloadError::OtherDownload => {
                     let result = OpResult::Fail.code();
                     let wdl = WorldDownload {
                         data: Vec::new(),
@@ -196,14 +201,22 @@ impl Controller for ControllerService {
                     };
                     Ok(Response::new(wdl))
                 }
-                FSReadError => {
+                DownloadError::FSReadError => {
                     let result = OpResult::Fail.code();
                     let wdl = WorldDownload {
                         data: Vec::new(),
                         result,
                         comment: "Unable to get world data".to_string(),
                     };
-                    println!("Download succesful");
+                    Ok(Response::new(wdl))
+                }
+                DownloadError::Compression => {
+                    let result = OpResult::Fail.code();
+                    let wdl = WorldDownload {
+                        data: Vec::new(),
+                        result,
+                        comment: "Unable to compress world data".to_string(),
+                    };
                     Ok(Response::new(wdl))
                 }
             },
@@ -212,7 +225,6 @@ impl Controller for ControllerService {
 
     ///Handle startup request
     async fn start(&self, req: Request<StartRequest>) -> Result<Response<OpResponce>, Status> {
-        use security::{verify_key, Key};
         let key = req.into_inner().token;
         if !verify_key(Key {
             key,
@@ -222,7 +234,10 @@ impl Controller for ControllerService {
         }
 
         println!("Start request recived");
-        let mut state = server_managing::STATE.lock();
+        let mut state = match STATE.lock(){
+          Ok(lock )=> lock,  
+            Err(_) => return respond(OpResult::Fail, "Lock not aquired"),
+        };
         let res = state.start();
         match res {
             Ok(_) => {
@@ -230,9 +245,9 @@ impl Controller for ControllerService {
                 respond(OpResult::Success, "Started succesfuly")
             }
             Err(start_error) => match start_error {
-                Launch => respond(OpResult::Fail, "Failed to launch server"),
-                AlreadyRunning => respond(OpResult::Fail, "Server already running"),
-                Downloading => respond(OpResult::Fail, "Download in proggress! Can't start"),
+                StartError::Launch => respond(OpResult::Fail, "Failed to launch server"),
+                StartError::AlreadyRunning => respond(OpResult::Fail, "Server already running"),
+                StartError::Downloading => respond(OpResult::Fail, "Download in proggress! Can't start"),
             },
         }
     }
@@ -241,19 +256,21 @@ impl Controller for ControllerService {
     async fn stop(&self, req: Request<StopRequest>) -> Result<Response<OpResponce>, Status> {
         let key = req.into_inner().token;
         use common::Actions;
-        use security::{verify_key, Key};
         if !verify_key(Key {
             key,
             action: Actions::Stop,
         }) {
             return respond(OpResult::Denied, "Invalid token");
         }
-        let mut state = server_managing::STATE.lock();
+        let mut state = match STATE.lock(){
+          Ok(lock )=> lock,  
+            Err(_) => return respond(OpResult::Fail, "Lock not aquired"),
+        };
         println!("Stop request recived");
         let res = state.stop();
         match res {
             Err(stop_error) => match stop_error {
-                ProccesError => respond(
+                StopError::ProccesError => respond(
                     OpResult::Fail,
                     "Error occured while stopping server procces",
                 ),
@@ -267,8 +284,6 @@ impl Controller for ControllerService {
     }
 }
 
-/// Start and stop the minecraft server
-mod server_managing {
 
     #[derive(Debug)]
     pub enum ServerState {
@@ -348,7 +363,7 @@ mod server_managing {
                         .spawn()
                     {
                         Ok(child) => child,
-                        Err(c) => return Err(StartError::Launch),
+                        Err(_c) => return Err(StartError::Launch),
                     };
                     *self = Running { procces: child };
                     Ok(())
@@ -391,10 +406,6 @@ mod server_managing {
         pub fn wdl(&mut self) -> Result<Vec<u8>, DownloadError> {
             println!("Starting world download");
             // Send world-file to client
-            use std::process::Command;
-
-            use crate::server_managing::ServerState;
-
             match self {
                 Idle => {
                     *self = Downloading;
@@ -427,24 +438,17 @@ mod server_managing {
         }
     }
 
-    use parking_lot::Mutex;
-    use std::error::Error;
-    use std::fmt::Display;
+
     use std::io::Write;
     use std::process::{Child, Command, Stdio};
     use ServerState::*;
     /// Contains the current procces of the minecraft server and it's stdin
     pub static STATE: Mutex<ServerState> = Mutex::new(Idle);
-}
-mod download {}
 
 lazy_static! {
     static ref CONFIG: crate::Config = crate::config_load();
 }
 
-mod security {
-    use crate::common::Actions;
-    use crate::CONFIG;
     use magic_crypt::{new_magic_crypt, MagicCrypt256, MagicCryptTrait};
     use rand::prelude::*;
     use std::{collections::HashSet, sync::Mutex};
@@ -493,4 +497,4 @@ mod security {
         let res = set.remove(&key);
         res
     }
-}
+
