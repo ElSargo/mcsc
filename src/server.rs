@@ -2,8 +2,8 @@
 extern crate lazy_static;
 use actions::controller_server::{Controller, ControllerServer};
 use actions::{
-    AuthRequest, AuthResponce, CommandRequest, DownloadRequest, OpResponce, StartRequest,
-    StopRequest, WorldDownload,
+    AuthRequest, AuthResponce, BackupRequest, CommandRequest, DownloadRequest, OpResponce,
+    StartRequest, StopRequest, WorldDownload,
 };
 use tonic::{transport::Server, Request, Response, Status};
 pub mod actions {
@@ -80,119 +80,9 @@ fn respond(code: OpResult, comment: &str) -> Result<Response<OpResponce>, Status
         comment: comment.to_owned(),
     }))
 }
+
 #[tonic::async_trait]
 impl Controller for ControllerService {
-    ///Handle startup request
-    async fn start(&self, req: Request<StartRequest>) -> Result<Response<OpResponce>, Status> {
-        use security::{verify_key, Key};
-        let key = req.into_inner().token;
-        if !verify_key(Key {
-            key,
-            action: Actions::Start,
-        }) {
-            return respond(OpResult::Denied, "Invalid Token");
-        }
-
-        println!("Start request recived");
-        let mut state = server_managing::STATE.lock();
-        if state.poll() == false {
-            let res = state.start();
-            match res {
-                Ok(_) => {
-                    println!("Started minecraft server succesfully!");
-                    return respond(OpResult::Success, "Started succesfuly");
-                }
-                Err(e) => {
-                    println!("Error starting minecraft server: \n{:?}", e);
-                    return respond(OpResult::Fail, "Failed to start server");
-                }
-            }
-        } else {
-            println!("Minecraft server already running");
-            return respond(OpResult::Fail, "Server already running");
-        }
-    }
-
-    /// Handle stoping
-    async fn stop(&self, req: Request<StopRequest>) -> Result<Response<OpResponce>, Status> {
-        let key = req.into_inner().token;
-        use common::Actions;
-        use security::{verify_key, Key};
-        if !verify_key(Key {
-            key,
-            action: Actions::Stop,
-        }) {
-            return respond(OpResult::Denied, "Invalid token");
-        }
-        let mut state = server_managing::STATE.lock();
-        if state.poll() == true {
-            println!("Stop request recived");
-            let res = state.stop();
-            match res {
-                Err(_) => {
-                    println!("Error stopping minecraft server");
-                    return respond(OpResult::Fail, "Error occured while stopping server");
-                }
-                Ok(_) => {
-                    println!("Minecraft server stopped succesfully");
-                    return respond(OpResult::Success, "Server stopped successfuly");
-                }
-            }
-        } else {
-            println!("Minecraft server already stopped");
-            return respond(OpResult::Fail, "Server already stopped");
-        }
-    }
-
-    /// Requset to download the worldfile
-    async fn download(
-        &self,
-        req: Request<DownloadRequest>,
-    ) -> Result<Response<WorldDownload>, Status> {
-        let key = req.into_inner().token;
-        if !security::verify_key(security::Key {
-            key,
-            action: Actions::Download,
-        }) {
-            return Err(Status::new(tonic::Code::InvalidArgument, "Invalid token"));
-        }
-        let mut state = server_managing::STATE.lock();
-        if !state.poll_wdl(){
-            println!("Starting world download");
-            let fs_read = download::get_world_bytes(&mut state);
-            match fs_read {
-                Ok(data) => {
-                    let result = OpResult::Success.code();
-                    let wdl = WorldDownload {
-                        data,
-                        result,
-                        comment: "Starting Download".to_string(),
-                    };
-                    println!("Download succesful");
-                    Ok(Response::new(wdl))
-                }
-                Err(_) => {
-                    let result = OpResult::Fail.code();
-                    let wdl = WorldDownload {
-                        data: Vec::new(),
-                        result,
-                        comment: "Unable to get world data".to_string(),
-                    };
-                    println!("Download succesful");
-                    Ok(Response::new(wdl))
-                }
-            }
-        } else {
-            let result = OpResult::Fail.code();
-            let wdl = WorldDownload {
-                data: Vec::new(),
-                result,
-                comment: "Service occupided by other user".to_string(),
-            };
-            Ok(Response::new(wdl))
-        }
-    }
-
     async fn auth(&self, req: Request<AuthRequest>) -> Result<Response<AuthResponce>, Status> {
         use Actions::*;
         let action = match req.into_inner().action {
@@ -218,6 +108,18 @@ impl Controller for ControllerService {
         }))
     }
 
+    async fn backup(&self, req: Request<BackupRequest>) -> Result<Response<OpResponce>, Status> {
+        let key = req.into_inner().token;
+        if !security::verify_key(security::Key {
+            key,
+            action: Actions::Download,
+        }) {
+            return Err(Status::new(tonic::Code::InvalidArgument, "Invalid token"));
+        }
+
+        todo!()
+    }
+
     async fn command(&self, req: Request<CommandRequest>) -> Result<Response<OpResponce>, Status> {
         let req = req.into_inner();
         let key = req.token;
@@ -229,18 +131,138 @@ impl Controller for ControllerService {
             return respond(OpResult::Denied, "Invalid token");
         }
         let mut state = server_managing::STATE.lock();
-        if state.poll() == true {
-            let res = state.run_command(&req.command);
-            match res {
-                Err(_) => {
-                    return respond(OpResult::Fail, "Error running command");
-                }
-                Ok(_) => {
-                    return respond(OpResult::Success, "Command ran succesfully! note this does not nessisarly mean the command was valid only that it's execution was attempted");
+        let res = state.run_command(&req.command);
+        match res {
+            Err(command_error) => {
+                match command_error{
+                Idle => {
+                    respond(OpResult::Fail, "Server stopped, comamnd can't be run")
+                    },
+                Download => {
+                    respond(OpResult::Fail, "Download in progress! Comamnd can't be run")
+                    },
+                ProccesError => {
+                    respond(OpResult::Fail, "Error running command on procces")
+                    },
                 }
             }
-        } else {
-            return respond(OpResult::Fail, "Server stopped, comamnd can't be run");
+            Ok(_) => {
+                respond(OpResult::Success, "Command ran succesfully! note this does not nessisarly mean the command was valid only that it's execution was attempted")
+            }
+        }
+    }
+
+    /// Requset to download the worldfile
+    async fn download(
+        &self,
+        req: Request<DownloadRequest>,
+    ) -> Result<Response<WorldDownload>, Status> {
+        let key = req.into_inner().token;
+        if !security::verify_key(security::Key {
+            key,
+            action: Actions::Download,
+        }) {
+            return Err(Status::new(tonic::Code::InvalidArgument, "Invalid token"));
+        }
+        let mut state = server_managing::STATE.lock();
+        let world_bytes = state.wdl();
+        match world_bytes {
+            Ok(data) => {
+                let result = OpResult::Success.code();
+                let wdl = WorldDownload {
+                    data,
+                    result,
+                    comment: "Starting Download".to_string(),
+                };
+                println!("Download succesful");
+                Ok(Response::new(wdl))
+            }
+            Err(downloaderror) => match downloaderror {
+                ServerRunning => {
+                    let result = OpResult::Fail.code();
+                    let wdl = WorldDownload {
+                        data: Vec::new(),
+                        result,
+                        comment: "Server running stop to download".to_string(),
+                    };
+                    Ok(Response::new(wdl))
+                }
+                OtherDownload => {
+                    let result = OpResult::Fail.code();
+                    let wdl = WorldDownload {
+                        data: Vec::new(),
+                        result,
+                        comment: "Service occupided by other user".to_string(),
+                    };
+                    Ok(Response::new(wdl))
+                }
+                FSReadError => {
+                    let result = OpResult::Fail.code();
+                    let wdl = WorldDownload {
+                        data: Vec::new(),
+                        result,
+                        comment: "Unable to get world data".to_string(),
+                    };
+                    println!("Download succesful");
+                    Ok(Response::new(wdl))
+                }
+            },
+        }
+    }
+
+    ///Handle startup request
+    async fn start(&self, req: Request<StartRequest>) -> Result<Response<OpResponce>, Status> {
+        use security::{verify_key, Key};
+        let key = req.into_inner().token;
+        if !verify_key(Key {
+            key,
+            action: Actions::Start,
+        }) {
+            return respond(OpResult::Denied, "Invalid Token");
+        }
+
+        println!("Start request recived");
+        let mut state = server_managing::STATE.lock();
+        let res = state.start();
+        match res {
+            Ok(_) => {
+                println!("Started minecraft server succesfully!");
+                respond(OpResult::Success, "Started succesfuly")
+            }
+            Err(start_error) => match start_error {
+                Launch => respond(OpResult::Fail, "Failed to launch server"),
+                AlreadyRunning => respond(OpResult::Fail, "Server already running"),
+                Downloading => respond(OpResult::Fail, "Download in proggress! Can't start"),
+            },
+        }
+    }
+
+    /// Handle stoping
+    async fn stop(&self, req: Request<StopRequest>) -> Result<Response<OpResponce>, Status> {
+        let key = req.into_inner().token;
+        use common::Actions;
+        use security::{verify_key, Key};
+        if !verify_key(Key {
+            key,
+            action: Actions::Stop,
+        }) {
+            return respond(OpResult::Denied, "Invalid token");
+        }
+        let mut state = server_managing::STATE.lock();
+        println!("Stop request recived");
+        let res = state.stop();
+        match res {
+            Err(stop_error) => match stop_error {
+                ProccesError => respond(
+                    OpResult::Fail,
+                    "Error occured while stopping server procces",
+                ),
+                _ => respond(OpResult::Fail, "Server already idle"),
+            },
+            Ok(_) => {
+                println!("Minecraft server stopped succesfully");
+                return respond(OpResult::Success, "Server stopped successfuly");
+            }
         }
     }
 }
@@ -250,145 +272,162 @@ mod server_managing {
 
     #[derive(Debug)]
     pub enum ServerState {
-        Stoped,
+        Idle,
         Running { procces: Child },
         Downloading,
     }
 
     #[derive(Debug)]
-    struct StateError {
-        needed: ServerState,
-        got: String,
+    pub enum StopError {
+        Idle,
+        Downloading,
+        ProccesError,
     }
 
-    impl Display for StateError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(
-                f,
-                "StateError: nedded: {:?}, got: {:?}",
-                self.needed, self.got
-            )
-        }
+    #[derive(Debug)]
+    pub enum StartError {
+        Launch,
+        AlreadyRunning,
+        Downloading,
     }
 
-    impl std::error::Error for StateError {}
+    #[derive(Debug)]
+    pub enum DownloadError {
+        ServerRunning,
+        OtherDownload,
+        FSReadError,
+        Compression,
+    }
+
+    #[derive(Debug)]
+    pub enum CommandError {
+        Idle,
+        Downloading,
+        ProccesError,
+    }
 
     impl ServerState {
-        pub fn get_child(&mut self) -> Option<&mut Child> {
+        pub fn wdl(&mut self) -> Result<Vec<u8>, DownloadError> {
+            println!("Starting world download");
+            // Send world-file to client
+            use std::error::Error;
+            use std::process::Command;
+
+            use crate::server_managing::ServerState;
+
             match self {
-                Running { procces } => Some(procces),
-                _ => None,
-            }
-        }
-
-        pub fn poll_wdl(&self) -> bool {
-            match self {
-                ServerState::Downloading => true,
-                _ => false,
-            }
-        }
-
-        pub fn set_wdl(&mut self, status: bool) {
-            if status {
-                match self {
-                    ServerState::Stoped => *self = ServerState::Downloading,
-                    _ => {}
+                Idle => {
+                    *self = Downloading;
+                    // Compress the file
+                    match Command::new("tar")
+                        .arg("-czf")
+                        .arg("worldupload.tar.gz")
+                        .arg("world")
+                        .spawn()
+                    {
+                        Ok(mut child) => {
+                            if let Err(_) = child.wait() {
+                                return Err(DownloadError::Compression);
+                            }
+                        }
+                        Err(_) => {
+                            return Err(DownloadError::Compression);
+                        }
+                    }
+                    let data = match std::fs::read("worldupload.tar.gz") {
+                        Ok(data) => data,
+                        Err(_) => return Err(DownloadError::FSReadError),
+                    };
+                    *self = Idle;
+                    Ok(data)
                 }
-            } else {
-                match self {
-                    ServerState::Downloading => *self = ServerState::Stoped,
-                    _ => {}
-                }
+                Running { procces: _ } => Err(DownloadError::ServerRunning),
+                Downloading => Err(DownloadError::OtherDownload),
             }
         }
 
-        pub fn run_command(&mut self, cmd: &str) -> Result<(), ()> {
+        pub fn run_command(&mut self, cmd: &str) -> Result<(), CommandError> {
             match self {
                 Running { procces } => {
                     let pstdin = procces.stdin.as_mut();
                     match pstdin {
                         Some(buff) => match buff.write_all(&format!("\n{}\n", cmd).into_bytes()) {
-                            Err(_) => Err(()),
+                            Err(_) => Err(CommandError::ProccesError),
                             _ => Ok(()),
                         },
-                        None => Err(()),
+                        None => Err(CommandError::ProccesError),
                     }
                 }
-                _ => Err(()),
+                Idle => Err(CommandError::Idle),
+                Downloading => Err(CommandError::Downloading),
             }
         }
 
         /// Stop the running procces by entering stop into the stdin
-        pub fn stop(&mut self) -> Result<(), ()> {
-            match self.get_child() {
-                Some(child) => {
+        pub fn stop(&mut self) -> Result<(), StopError> {
+            self.check_stop();
+            match self {
+                Running { procces: child } => {
                     let child_input = child.stdin.as_mut();
                     match child_input {
                         Some(buff) => {
                             match buff.write_all(b"\nstop\n") {
-                                Err(_) => return Err(()),
+                                Err(_) => return Err(StopError::ProccesError),
                                 _ => {}
                             };
                             match child.wait() {
                                 Ok(_) => {}
                                 Err(_) => {}
                             }
-                            *self = Stoped;
-                            Err(())
+                            *self = Idle;
+                            Ok(())
                         }
                         None => {
                             println!("Unable to stop minecraft server");
-                            Err(())
+                            Err(StopError::ProccesError)
                         }
                     }
                 }
-                _ => Err(()),
+                Downloading => Err(StopError::Downloading),
+                Idle => Err(StopError::Idle),
             }
         }
 
         /// Spawn a new java procces and store it in MINECRAFT_SERVER_STATE
-        pub fn start(&mut self) -> Result<(), Box<dyn Error>> {
+        pub fn start(&mut self) -> Result<(), StartError> {
+            self.check_stop();
             match self {
-                Stoped => {
-                    let child = Command::new("sh")
+                Idle => {
+                    let child = match Command::new("sh")
                         .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
                         .arg("launch.sh")
-                        .spawn()?;
+                        .spawn()
+                    {
+                        Ok(child) => child,
+                        Err(c) => return Err(StartError::Launch),
+                    };
                     *self = Running { procces: child };
                     Ok(())
                 }
-                _ => Err(Box::new(StateError {
-                    needed: ServerState::Stoped,
-                    got: format!("{:?}", self),
-                })),
+                Downloading => Err(StartError::Downloading),
+                Running { procces: _ } => Err(StartError::AlreadyRunning),
             }
         }
 
-        pub fn poll(&mut self) -> bool {
-            match self {
-                Running { procces: c } => {
-                    let res = c.try_wait();
-                    match res {
-                        Ok(possible_exit_code) => match possible_exit_code {
-                            Some(_exit_code) => {
-                                //Procces finished
-                                *self = Stoped;
-                                false
-                            }
-                            //Procces running
-                            None => true,
-                        },
-                        //Procces has no stdin, potential issue
-                        //TODO investigate possible condtions for this branch to match and consequnces
-                        Err(_) => false,
+        pub fn check_stop(&mut self) {
+            if let Running { procces: c } = self {
+                let res = c.try_wait();
+                if let Ok(possible_exit_code) = res {
+                    if let Some(_exit_code) = possible_exit_code {
+                        //Procces finished
+                        *self = Idle;
                     }
                 }
-                //No procces
-                Stoped => false,
-                Downloading => false,
             }
         }
     }
+
     use parking_lot::Mutex;
     use std::error::Error;
     use std::fmt::Display;
@@ -396,33 +435,9 @@ mod server_managing {
     use std::process::{Child, Command, Stdio};
     use ServerState::*;
     /// Contains the current procces of the minecraft server and it's stdin
-    pub static STATE: Mutex<ServerState> = Mutex::new(Stoped);
+    pub static STATE: Mutex<ServerState> = Mutex::new(Idle);
 }
-mod download {
-    // Send world-file to client
-    use std::error::Error;
-    use std::process::Command;
-
-    use crate::server_managing::ServerState;
-    
-    //TODO world backup scheme
-    fn create_tarball() -> Result<(), Box<dyn Error>> {
-        Command::new("tar")
-            .arg("-czf")
-            .arg("worldupload.tar.gz")
-            .arg("world")
-            .spawn()?
-            .wait()?;
-        Ok(())
-    }
-
-    pub fn get_world_bytes(state: &mut ServerState) -> Result<Vec<u8>, Box<dyn Error>> {
-        state.set_wdl(true);
-        create_tarball()?;
-        state.set_wdl(false);
-        return Ok(std::fs::read("worldupload.tar.gz")?);
-    }
-}
+mod download {}
 
 lazy_static! {
     static ref CONFIG: crate::Config = crate::config_load();
