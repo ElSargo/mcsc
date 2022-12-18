@@ -22,6 +22,7 @@ toml = "*"
 serde_derive = "*"
 lazy_static = "*"
 parking_lot = "*"
+no-panic = "0.1.17"
 
 [build-dependencies]
 tonic-build = "*"

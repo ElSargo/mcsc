@@ -1,6 +1,8 @@
+#![forbid(unsafe_code)]
 #[macro_use]
 extern crate lazy_static;
 use actions::controller_server::{Controller, ControllerServer};
+use no_panic::no_panic;
 use actions::{
     AuthRequest, AuthResponce, BackupRequest, CommandRequest, DownloadRequest, OpResponce,
     StartRequest, StopRequest, WorldDownload,
@@ -33,6 +35,7 @@ impl OpResult {
 
 /// Create a server that will allow users to start, stop a minecraft server as well as download the world file
 #[tokio::main(flavor = "current_thread")] // no need to use many threads as trafic will be very low
+#[no_panic]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         // Change working dir that of .minecraft
