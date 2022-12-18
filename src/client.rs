@@ -1,10 +1,8 @@
 pub mod actions {
     tonic::include_proto!("actions");
 }
-mod common;
 use actions::controller_client::ControllerClient;
 use actions::{AuthRequest, DownloadRequest, OpResponce, StartRequest, StopRequest};
-use common::Actions;
 use security::decrypt;
 use std::fs;
 use std::thread::sleep;
@@ -16,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = read_config();
     println!("Config: {:?}", config);
 
-    println!("Enter a command: \n\"Start\" to request a startup or \n\"Stop\" to request a shutdown or \n\"Download\" to download the world file");
+    println!("Enter a command: \n\"Start\" to request a startup or \n\"Stop\" to request a shutdown or \n\"Backup\" to create a backup or \n\"Download\" to download the latest backup");
 
     let mut input = String::new();
     let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -31,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
-                    action: Actions::Start.code(),
+                    action: AuthAction::Start.into(),
                 })
                 .await?
                 .into_inner();
@@ -45,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
-                    action: Actions::Stop.code(),
+                    action: AuthAction::Stop.into(),
                 })
                 .await?
                 .into_inner();
@@ -55,11 +53,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             responce = client.stop(request).await?;
         }
 
+        "Backup\n" => {
+            let mut client = ControllerClient::connect(config.ip).await?;
+            let key = client
+                .auth(AuthRequest {
+                    action: AuthAction::Backup.into(),
+                })
+                .await?
+                .into_inner();
+            println!("[Server responce] {}", key.comment);
+            let token = decrypt(key.key, config.key).expect("Client side auth error occured");
+            let request = BackupRequest { token };
+            responce = client.backup(request).await?;
+        }
+
         "Download\n" => {
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
-                    action: Actions::Download.code(),
+                    action: AuthAction::Download.into(),
                 })
                 .await?
                 .into_inner();
@@ -104,6 +116,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 use serde_derive::Deserialize;
 
+use crate::actions::{AuthAction, BackupRequest};
+
 #[derive(Deserialize, Debug)]
 struct Config {
     ip: String,
@@ -111,7 +125,7 @@ struct Config {
 }
 
 fn read_config() -> Config {
-    let text = std::fs::read("config.toml").expect("No config file!");
+    let text = std::fs::read("mcsc_client.toml").expect("No config file!");
     toml::from_slice(&text).expect("No config file!")
 }
 

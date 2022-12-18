@@ -1,41 +1,20 @@
 #![forbid(unsafe_code)]
+
 #[macro_use]
 extern crate lazy_static;
 use actions::controller_server::{Controller, ControllerServer};
-use no_panic::no_panic;
+// use no_panic::no_panic;
 use actions::{
-    AuthRequest, AuthResponce, BackupRequest, CommandRequest, DownloadRequest, OpResponce,
-    StartRequest, StopRequest, WorldDownload,
+    AuthAction, AuthRequest, AuthResponce, BackupRequest, CommandRequest, DownloadRequest,
+    OpResponce, OpResult, StartRequest, StopRequest, WorldDownload,
 };
 use tonic::{transport::Server, Request, Response, Status};
 pub mod actions {
     tonic::include_proto!("actions");
 }
 
-mod common;
-
-use common::Actions;
-
-#[derive(Eq, Clone, Hash, PartialEq)]
-pub enum OpResult {
-    Success = 0,
-    Fail = 1,
-    Denied = 2,
-}
-
-impl OpResult {
-    pub fn code(&self) -> i32 {
-        match self {
-            Self::Success => 0,
-            Self::Fail => 1,
-            Self::Denied => 2,
-        }
-    }
-}
-
 /// Create a server that will allow users to start, stop a minecraft server as well as download the world file
 #[tokio::main(flavor = "current_thread")] // no need to use many threads as trafic will be very low
-#[no_panic]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         // Change working dir that of .minecraft
@@ -68,7 +47,7 @@ struct Config {
 }
 
 fn config_load() -> Config {
-    let conf = std::fs::read("server.toml").expect("Unable to load config file");
+    let conf = std::fs::read("mcsc_server.toml").expect("Unable to load config file");
     toml::from_slice(&conf).expect("Unable to parse config, (syntax error)")
 }
 
@@ -79,7 +58,7 @@ struct ControllerService {}
 /// Shorthand for Ok(Responce::new(OpResponce{result: code, comment: comment}))
 fn respond(code: OpResult, comment: &str) -> Result<Response<OpResponce>, Status> {
     Ok(Response::new(OpResponce {
-        result: code.code(),
+        result: code.into(),
         comment: comment.to_owned(),
     }))
 }
@@ -87,23 +66,19 @@ fn respond(code: OpResult, comment: &str) -> Result<Response<OpResponce>, Status
 #[tonic::async_trait]
 impl Controller for ControllerService {
     async fn auth(&self, req: Request<AuthRequest>) -> Result<Response<AuthResponce>, Status> {
-        use Actions::*;
-        let action = match req.into_inner().action {
-            0 => Start,
-            1 => Stop,
-            2 => Command,
-            3 => Download,
-            _ => {
+        let action = match AuthAction::from_i32(req.into_inner().action) {
+            Some(action) => action,
+            None => {
                 return Ok(Response::new(AuthResponce {
-                    result: OpResult::Fail.code(),
+                    result: OpResult::Fail as i32,
                     key: Vec::new(),
                     comment: "Invalid action".to_string(),
-                }));
+                }))
             }
         };
         let key = gen_key(action);
         let encypted_key = encrypt(key);
-        let result = OpResult::Success.code();
+        let result = OpResult::Success.into();
         Ok(Response::new(AuthResponce {
             result,
             key: encypted_key,
@@ -115,12 +90,28 @@ impl Controller for ControllerService {
         let key = req.into_inner().token;
         if !verify_key(Key {
             key,
-            action: Actions::Download,
+            action: AuthAction::Backup,
         }) {
             return Err(Status::new(tonic::Code::InvalidArgument, "Invalid token"));
         }
-
-        todo!()
+        let mut state = match STATE.lock() {
+            Ok(lock) => lock,
+            Err(_) => return respond(OpResult::Fail, "Mutex poioned"),
+        };
+        let result = state.backup();
+        match result {
+            Ok(_) => respond(OpResult::Success, "Backed up succesfuly"),
+            Err(download_error) => match download_error {
+                BackupError::OtherBackup => respond(OpResult::Fail, "backed up succesfuly"),
+                BackupError::ServerRunning => {
+                    respond(OpResult::Fail, "Back up failed, server still running")
+                }
+                BackupError::Compression => respond(
+                    OpResult::Fail,
+                    "Back up failed to compress the world folder",
+                ),
+            },
+        }
     }
 
     async fn command(&self, req: Request<CommandRequest>) -> Result<Response<OpResponce>, Status> {
@@ -128,7 +119,7 @@ impl Controller for ControllerService {
         let key = req.token;
         if !verify_key(Key {
             key,
-            action: Actions::Command,
+            action: AuthAction::Command,
         }) {
             return respond(OpResult::Denied, "Invalid token");
         }
@@ -165,70 +156,21 @@ impl Controller for ControllerService {
         let key = req.into_inner().token;
         if !verify_key(Key {
             key,
-            action: Actions::Download,
+            action: AuthAction::Download,
         }) {
             return Err(Status::new(tonic::Code::InvalidArgument, "Invalid token"));
         }
-        let mut state = match STATE.lock() {
-            Ok(lock) => lock,
-            Err(_) => {
-                return Ok(Response::new(WorldDownload {
-                    result: OpResult::Fail.code(),
-                    comment: "Lock poisned".to_string(),
-                    data: Vec::new(),
-                }))
-            }
-        };
-        let world_bytes = state.wdl();
-        match world_bytes {
-            Ok(data) => {
-                let result = OpResult::Success.code();
-                let wdl = WorldDownload {
-                    data,
-                    result,
-                    comment: "Starting Download".to_string(),
-                };
-                println!("Download succesful");
-                Ok(Response::new(wdl))
-            }
-            Err(download_error) => match download_error {
-                DownloadError::ServerRunning => {
-                    let result = OpResult::Fail.code();
-                    let wdl = WorldDownload {
-                        data: Vec::new(),
-                        result,
-                        comment: "Server running stop to download".to_string(),
-                    };
-                    Ok(Response::new(wdl))
-                }
-                DownloadError::OtherDownload => {
-                    let result = OpResult::Fail.code();
-                    let wdl = WorldDownload {
-                        data: Vec::new(),
-                        result,
-                        comment: "Service occupided by other user".to_string(),
-                    };
-                    Ok(Response::new(wdl))
-                }
-                DownloadError::FSReadError => {
-                    let result = OpResult::Fail.code();
-                    let wdl = WorldDownload {
-                        data: Vec::new(),
-                        result,
-                        comment: "Unable to get world data".to_string(),
-                    };
-                    Ok(Response::new(wdl))
-                }
-                DownloadError::Compression => {
-                    let result = OpResult::Fail.code();
-                    let wdl = WorldDownload {
-                        data: Vec::new(),
-                        result,
-                        comment: "Unable to compress world data".to_string(),
-                    };
-                    Ok(Response::new(wdl))
-                }
-            },
+        match std::fs::read("backups/worldupload.tar.gz") {
+            Ok(data) => Ok(Response::new(WorldDownload {
+                result: OpResult::Success.into(),
+                comment: "Download succesful".to_string(),
+                data,
+            })),
+            Err(_) => Ok(Response::new(WorldDownload {
+                result: OpResult::Fail.into(),
+                comment: "Download failed, couldn't read file".to_string(),
+                data: Vec::new(),
+            })),
         }
     }
 
@@ -237,7 +179,7 @@ impl Controller for ControllerService {
         let key = req.into_inner().token;
         if !verify_key(Key {
             key,
-            action: Actions::Start,
+            action: AuthAction::Start,
         }) {
             return respond(OpResult::Denied, "Invalid Token");
         }
@@ -266,10 +208,10 @@ impl Controller for ControllerService {
     /// Handle stoping
     async fn stop(&self, req: Request<StopRequest>) -> Result<Response<OpResponce>, Status> {
         let key = req.into_inner().token;
-        use common::Actions;
+        use AuthAction;
         if !verify_key(Key {
             key,
-            action: Actions::Stop,
+            action: AuthAction::Stop,
         }) {
             return respond(OpResult::Denied, "Invalid token");
         }
@@ -299,7 +241,7 @@ impl Controller for ControllerService {
 pub enum ServerState {
     Idle,
     Running { procces: Child },
-    Downloading,
+    BackingUp,
 }
 
 #[derive(Debug)]
@@ -317,10 +259,9 @@ pub enum StartError {
 }
 
 #[derive(Debug)]
-pub enum DownloadError {
+pub enum BackupError {
     ServerRunning,
-    OtherDownload,
-    FSReadError,
+    OtherBackup,
     Compression,
 }
 
@@ -357,7 +298,7 @@ impl ServerState {
                 }
             }
             Idle => Err(CommandError::Idle),
-            Downloading => Err(CommandError::Downloading),
+            BackingUp => Err(CommandError::Downloading),
         }
     }
 
@@ -378,7 +319,7 @@ impl ServerState {
                 *self = Running { procces: child };
                 Ok(())
             }
-            Downloading => Err(StartError::Downloading),
+            BackingUp => Err(StartError::Downloading),
             Running { procces: _ } => Err(StartError::AlreadyRunning),
         }
     }
@@ -408,42 +349,37 @@ impl ServerState {
                     }
                 }
             }
-            Downloading => Err(StopError::Downloading),
+            BackingUp => Err(StopError::Downloading),
             Idle => Err(StopError::Idle),
         }
     }
 
-    pub fn wdl(&mut self) -> Result<Vec<u8>, DownloadError> {
-        println!("Starting world download");
-        // Send world-file to client
+    pub fn backup(&mut self) -> Result<(), BackupError> {
+        println!("Starting world backup");
         match self {
             Idle => {
-                *self = Downloading;
+                *self = BackingUp;
                 // Compress the file
                 match Command::new("tar")
                     .arg("-czf")
-                    .arg("worldupload.tar.gz")
+                    .arg("backups/worldupload.tar.gz")
                     .arg("world")
                     .spawn()
                 {
                     Ok(mut child) => {
                         if let Err(_) = child.wait() {
-                            return Err(DownloadError::Compression);
+                            return Err(BackupError::Compression);
                         }
                     }
                     Err(_) => {
-                        return Err(DownloadError::Compression);
+                        return Err(BackupError::Compression);
                     }
                 }
-                let data = match std::fs::read("worldupload.tar.gz") {
-                    Ok(data) => data,
-                    Err(_) => return Err(DownloadError::FSReadError),
-                };
                 *self = Idle;
-                Ok(data)
+                Ok(())
             }
-            Running { procces: _ } => Err(DownloadError::ServerRunning),
-            Downloading => Err(DownloadError::OtherDownload),
+            Running { procces: _ } => Err(BackupError::ServerRunning),
+            BackingUp => Err(BackupError::OtherBackup),
         }
     }
 }
@@ -471,7 +407,7 @@ const KEY_BYTES: usize = 256;
 
 #[derive(Eq, Clone, Hash, PartialEq, Debug)]
 pub struct Key {
-    pub action: Actions,
+    pub action: AuthAction,
     pub key: Vec<u8>,
 }
 
@@ -490,7 +426,7 @@ fn gen_bytes() -> Vec<u8> {
 }
 
 /// Create a new key to give to our client, we will store it so it can be verified later
-pub fn gen_key(action: Actions) -> Vec<u8> {
+pub fn gen_key(action: AuthAction) -> Vec<u8> {
     // Keys must be initialised before use
     let mut set = KEYS.lock().expect("Mutex poisoned");
     let bytes = gen_bytes();

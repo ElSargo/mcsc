@@ -61,6 +61,7 @@ enum AuthAction{
   Stop = 1;
   Command = 2;
   Download = 3;
+  Backup = 4;
 }
 
 
