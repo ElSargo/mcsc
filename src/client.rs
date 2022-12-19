@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = read_config();
     println!("Config: {:?}", config);
 
-    println!("Enter a command: \n\"Start\" to request a startup or \n\"Stop\" to request a shutdown or \n\"Backup\" to create a backup or \n\"Download\" to download the latest backup");
+    println!("Enter a command: \n\"Start\" to request a startup or \n\"Stop\" to request a shutdown or \n\"Backup\" to create a backup or \n\"Download\" to download the latest backup\n\"Command\" to run a command");
 
     let mut input = String::new();
     let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -67,6 +67,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             responce = client.backup(request).await?;
         }
 
+        "Command\n" => {
+            print!("Enter command \n=> ");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            let mut command = String::new();
+            if let Err(_) = std::io::stdin().read_line(&mut command) {
+                println!("Error reading input");
+                return Ok(());
+            }            let mut client = ControllerClient::connect(config.ip).await?;
+            let key = client
+                .auth(AuthRequest {
+                    action: AuthAction::Command.into(),
+                })
+                .await?
+                .into_inner();
+            println!("[Server responce] {}", key.comment);
+            let token = decrypt(key.key, config.key).expect("Client side auth error occured");
+            let request = CommandRequest{ token, command: command.to_string()};
+            responce = client.command(request).await?;
+        }
+
         "Download\n" => {
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
@@ -116,7 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 use serde_derive::Deserialize;
 
-use crate::actions::{AuthAction, BackupRequest};
+use crate::actions::{AuthAction, BackupRequest, CommandRequest};
 
 #[derive(Deserialize, Debug)]
 struct Config {

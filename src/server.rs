@@ -3,6 +3,7 @@
 #[macro_use]
 extern crate lazy_static;
 use actions::controller_server::{Controller, ControllerServer};
+use std::path::PathBuf;
 // use no_panic::no_panic;
 use actions::{
     AuthAction, AuthRequest, AuthResponce, BackupRequest, CommandRequest, DownloadRequest,
@@ -57,6 +58,7 @@ struct ControllerService {}
 
 /// Shorthand for Ok(Responce::new(OpResponce{result: code, comment: comment}))
 fn respond(code: OpResult, comment: &str) -> Result<Response<OpResponce>, Status> {
+    println!("Replying with: {}", comment);
     Ok(Response::new(OpResponce {
         result: code.into(),
         comment: comment.to_owned(),
@@ -127,6 +129,7 @@ impl Controller for ControllerService {
             Ok(lock) => lock,
             Err(_) => return respond(OpResult::Fail, "Lock not aquired"),
         };
+        println!("Running command: {}", &req.command);
         let res = state.run_command(&req.command);
         match res {
             Err(command_error) => {
@@ -160,7 +163,17 @@ impl Controller for ControllerService {
         }) {
             return Err(Status::new(tonic::Code::InvalidArgument, "Invalid token"));
         }
-        match std::fs::read("backups/worldupload.tar.gz") {
+        let path = match latest_file("./backups") {
+            Some(path) => path,
+            None => {
+                return Ok(Response::new(WorldDownload {
+                    result: OpResult::Fail.into(),
+                    comment: "Download failed, no backups to download!".to_string(),
+                    data: Vec::new(),
+                }));
+            }
+        };
+        match std::fs::read(path) {
             Ok(data) => Ok(Response::new(WorldDownload {
                 result: OpResult::Success.into(),
                 comment: "Download succesful".to_string(),
@@ -362,7 +375,7 @@ impl ServerState {
                 // Compress the file
                 match Command::new("tar")
                     .arg("-czf")
-                    .arg("backups/worldupload.tar.gz")
+                    .arg(format!("backups/{}.tar.gz", ran_letters(32)))
                     .arg("world")
                     .spawn()
                 {
@@ -416,10 +429,10 @@ pub fn encrypt(data: Vec<u8>) -> Vec<u8> {
 }
 
 /// Generate some some random bytes for authentification
-fn gen_bytes() -> Vec<u8> {
+fn gen_bytes(key_bytes: usize) -> Vec<u8> {
     let mut rng = thread_rng();
-    let mut bytes: Vec<u8> = Vec::with_capacity(KEY_BYTES);
-    for _ in 0..KEY_BYTES {
+    let mut bytes: Vec<u8> = Vec::with_capacity(key_bytes);
+    for _ in 0..key_bytes {
         bytes.push(rng.gen());
     }
     bytes
@@ -429,7 +442,7 @@ fn gen_bytes() -> Vec<u8> {
 pub fn gen_key(action: AuthAction) -> Vec<u8> {
     // Keys must be initialised before use
     let mut set = KEYS.lock().expect("Mutex poisoned");
-    let bytes = gen_bytes();
+    let bytes = gen_bytes(KEY_BYTES);
     set.insert(Key {
         key: bytes.clone(),
         action,
@@ -441,4 +454,70 @@ pub fn verify_key(key: Key) -> bool {
     let mut set = KEYS.lock().expect("Mutex poisend");
     let res = set.remove(&key);
     res
+}
+
+fn latest_file(dir: &str) -> Option<PathBuf> {
+    let files = match std::fs::read_dir(dir) {
+        Ok(files) => files,
+        Err(_) => return None,
+    }
+    .into_iter();
+
+    match files
+        .flatten()
+        .map(|f| f.path())
+        .map(|p| {
+            let time = match std::fs::metadata(&p) {
+                Ok(metadata) => match metadata.modified() {
+                    Ok(time) => time,
+                    Err(_) => return None,
+                },
+                Err(_) => return None,
+            };
+            Some((p, time))
+        })
+        .flatten()
+        .max_by_key(|t| t.1)
+    {
+        Some(tuple) => Some(tuple.0),
+        None => None,
+    }
+}
+fn ran_letters(len: usize) -> String{
+    let mut string = String::with_capacity(len) ;
+    let mut rng = thread_rng();
+    for _ in 0..len {
+        string.push(
+            match rng.gen_range(0..26) {
+                0 => 'a',
+                1 => 'b',
+                2 => 'c',
+                3 => 'd',
+                4 => 'e',
+                5 => 'f',
+                6 => 'g',
+                7 => 'h',
+                8 => 'i',
+                9 => 'j',
+                10 => 'k', 
+                11 => 'l',
+                12 => 'm',
+                13 => 'n',
+                14 => 'o',
+                15 => 'p',
+                16 => 'q',
+                17 => 'r',
+                18 => 's',
+                19 => 't',
+                20 => 'u',
+                21 => 'v',
+                22 => 'w',
+                23 => 'x',
+                24 => 'y',
+                _ => 'z',
+            }
+        );
+    }
+
+    string
 }

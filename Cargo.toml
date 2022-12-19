@@ -11,6 +11,10 @@ path = "src/server.rs"
 name = "client"
 path = "src/client.rs"
 
+[[bin]]
+name = "testing"
+path = "src/testing.rs"
+
 [dependencies]
 tonic = "*"
 prost = "*"
