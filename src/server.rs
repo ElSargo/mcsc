@@ -96,10 +96,7 @@ impl Controller for ControllerService {
         }) {
             return Err(Status::new(tonic::Code::InvalidArgument, "Invalid token"));
         }
-        let mut state = match STATE.lock() {
-            Ok(lock) => lock,
-            Err(_) => return respond(OpResult::Fail, "Mutex poioned"),
-        };
+        let mut state = STATE.lock();
         let result = state.backup();
         match result {
             Ok(_) => respond(OpResult::Success, "Backed up succesfuly"),
@@ -125,17 +122,13 @@ impl Controller for ControllerService {
         }) {
             return respond(OpResult::Denied, "Invalid token");
         }
-        let mut state = match STATE.lock() {
-            Ok(lock) => lock,
-            Err(_) => return respond(OpResult::Fail, "Lock not aquired"),
-        };
-        println!("Running command: {}", &req.command);
+        let mut state = STATE.lock();
         let res = state.run_command(&req.command);
         match res {
             Err(command_error) => {
                 match command_error{
                     CommandError::Idle => {
-                        respond(OpResult::Fail, "Server stopped, comamnd can't be run")
+                        respond(OpResult::Fail, "Server idle, comamnd can't be run")
                     },
                     CommandError::Downloading=> {
                         respond(OpResult::Fail, "Download in progress! Comamnd can't be run")
@@ -197,15 +190,10 @@ impl Controller for ControllerService {
             return respond(OpResult::Denied, "Invalid Token");
         }
 
-        println!("Start request recived");
-        let mut state = match STATE.lock() {
-            Ok(lock) => lock,
-            Err(_) => return respond(OpResult::Fail, "Lock not aquired"),
-        };
+        let mut state = STATE.lock();
         let res = state.start();
         match res {
             Ok(_) => {
-                println!("Started minecraft server succesfully!");
                 respond(OpResult::Success, "Started succesfuly")
             }
             Err(start_error) => match start_error {
@@ -228,11 +216,7 @@ impl Controller for ControllerService {
         }) {
             return respond(OpResult::Denied, "Invalid token");
         }
-        let mut state = match STATE.lock() {
-            Ok(lock) => lock,
-            Err(_) => return respond(OpResult::Fail, "Lock not aquired"),
-        };
-        println!("Stop request recived");
+        let mut state = STATE.lock();
         let res = state.stop();
         match res {
             Err(stop_error) => match stop_error {
@@ -243,7 +227,6 @@ impl Controller for ControllerService {
                 _ => respond(OpResult::Fail, "Server already idle"),
             },
             Ok(_) => {
-                println!("Minecraft server stopped succesfully");
                 return respond(OpResult::Success, "Server stopped successfuly");
             }
         }
@@ -357,7 +340,6 @@ impl ServerState {
                         Ok(())
                     }
                     None => {
-                        println!("Unable to stop minecraft server");
                         Err(StopError::ProccesError)
                     }
                 }
@@ -368,7 +350,6 @@ impl ServerState {
     }
 
     pub fn backup(&mut self) -> Result<(), BackupError> {
-        println!("Starting world backup");
         match self {
             Idle => {
                 *self = BackingUp;
@@ -400,11 +381,11 @@ impl ServerState {
 use std::io::Write;
 use std::process::{Child, Command, Stdio};
 use ServerState::*;
-/// Contains the current procces of the minecraft server and it's stdin
-pub static STATE: Mutex<ServerState> = Mutex::new(Idle);
 
 lazy_static! {
     static ref CONFIG: crate::Config = crate::config_load();
+    /// Contains the current procces of the minecraft server and it's stdin
+    static ref STATE: antidote::Mutex<ServerState> = antidote::Mutex::new(Idle);
 }
 
 use magic_crypt::{new_magic_crypt, MagicCrypt256, MagicCryptTrait};
@@ -483,40 +464,39 @@ fn latest_file(dir: &str) -> Option<PathBuf> {
         None => None,
     }
 }
-fn ran_letters(len: usize) -> String{
-    let mut string = String::with_capacity(len) ;
+
+fn ran_letters(len: usize) -> String {
+    let mut string = String::with_capacity(len);
     let mut rng = thread_rng();
     for _ in 0..len {
-        string.push(
-            match rng.gen_range(0..26) {
-                0 => 'a',
-                1 => 'b',
-                2 => 'c',
-                3 => 'd',
-                4 => 'e',
-                5 => 'f',
-                6 => 'g',
-                7 => 'h',
-                8 => 'i',
-                9 => 'j',
-                10 => 'k', 
-                11 => 'l',
-                12 => 'm',
-                13 => 'n',
-                14 => 'o',
-                15 => 'p',
-                16 => 'q',
-                17 => 'r',
-                18 => 's',
-                19 => 't',
-                20 => 'u',
-                21 => 'v',
-                22 => 'w',
-                23 => 'x',
-                24 => 'y',
-                _ => 'z',
-            }
-        );
+        string.push(match rng.gen_range(0..26) {
+            0 => 'a',
+            1 => 'b',
+            2 => 'c',
+            3 => 'd',
+            4 => 'e',
+            5 => 'f',
+            6 => 'g',
+            7 => 'h',
+            8 => 'i',
+            9 => 'j',
+            10 => 'k',
+            11 => 'l',
+            12 => 'm',
+            13 => 'n',
+            14 => 'o',
+            15 => 'p',
+            16 => 'q',
+            17 => 'r',
+            18 => 's',
+            19 => 't',
+            20 => 'u',
+            21 => 'v',
+            22 => 'w',
+            23 => 'x',
+            24 => 'y',
+            _ => 'z',
+        });
     }
 
     string
