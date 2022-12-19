@@ -5,6 +5,10 @@ extern crate lazy_static;
 use actions::controller_server::{Controller, ControllerServer};
 use futures::Stream;
 mod common;
+use actions::{
+    AuthAction, AuthRequest, AuthResponce, BackupRequest, CommandRequest, DownloadRequest,
+    OpResponce, OpResult, StartRequest, StopRequest, WorldDownload,
+};
 use common::ran_letters;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -15,10 +19,6 @@ use std::{
 };
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
-use actions::{
-    AuthAction, AuthRequest, AuthResponce, BackupRequest, CommandRequest, DownloadRequest,
-    OpResponce, OpResult, StartRequest, StopRequest, WorldDownload,
-};
 use tonic::{transport::Server, Request, Response, Status};
 pub mod actions {
     tonic::include_proto!("actions");
@@ -566,7 +566,7 @@ impl Iterator for WDLIter {
     type Item = WorldDownload;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.error{
+        if self.error {
             return None;
         }
         let bytes: Vec<u8> = match self.file_reader.fill_buf() {
@@ -579,7 +579,6 @@ impl Iterator for WDLIter {
                     comment: format!("Download failed"),
                     data: vec![],
                 });
-
             }
         };
         self.file_reader.consume(bytes.len());
