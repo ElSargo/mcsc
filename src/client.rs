@@ -1,8 +1,11 @@
+use std::io::Write;
+mod common;
 pub mod actions {
     tonic::include_proto!("actions");
 }
 use actions::controller_client::ControllerClient;
-use actions::{AuthRequest, DownloadRequest, OpResponce, StartRequest, StopRequest};
+use actions::{AuthRequest, DownloadRequest, OpResponce, OpResult, StartRequest, StopRequest};
+use common::ran_letters;
 use security::decrypt;
 use std::fs;
 use std::thread::sleep;
@@ -14,7 +17,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = read_config();
     println!("Config: {:?}", config);
 
-    println!("Enter a command: \n\"Start\" to request a startup or \n\"Stop\" to request a shutdown or \n\"Backup\" to create a backup or \n\"Download\" to download the latest backup\n\"Command\" to run a command");
+    println!(
+        "
+Enter a command: 
+0|\"Start\" to request a startup or 
+1|\"Stop\" to request a shutdown or 
+2|\"Backup\" to create a backup or 
+3|\"Command\" to run a command
+4|\"Download\" to download the latest backup
+"
+    );
 
     let mut input = String::new();
     let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -25,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let responce: Response<OpResponce>;
 
     match input.as_str() {
-        "Start\n" => {
+        "0\n" | "Start\n" => {
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
@@ -39,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             responce = client.start(request).await?;
         }
 
-        "Stop\n" => {
+        "1\n" | "Stop\n" => {
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
@@ -53,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             responce = client.stop(request).await?;
         }
 
-        "Backup\n" => {
+        "2\n" | "Backup\n" => {
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
@@ -62,19 +74,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?
                 .into_inner();
             println!("[Server responce] {}", key.comment);
-            let token = decrypt(key.key, config.key).expect("Client side auth error occured");
+            let token = decrypt(key.key, config.key)?;
             let request = BackupRequest { token };
             responce = client.backup(request).await?;
         }
 
-        "Command\n" => {
+        "3\n" | "Command\n" => {
             print!("Enter command \n=> ");
             let _ = std::io::Write::flush(&mut std::io::stdout());
             let mut command = String::new();
             if let Err(_) = std::io::stdin().read_line(&mut command) {
                 println!("Error reading input");
                 return Ok(());
-            }            let mut client = ControllerClient::connect(config.ip).await?;
+            }
+            let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
                     action: AuthAction::Command.into(),
@@ -82,12 +95,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?
                 .into_inner();
             println!("[Server responce] {}", key.comment);
-            let token = decrypt(key.key, config.key).expect("Client side auth error occured");
-            let request = CommandRequest{ token, command: command.to_string()};
+            let token = decrypt(key.key, config.key)?;
+            let request = CommandRequest {
+                token,
+                command: command.to_string(),
+            };
             responce = client.command(request).await?;
         }
 
-        "Download\n" => {
+        "4\n" | "Download\n" => {
+            // Generate file name
+            let path = format!("worldbackup-[{}].tar.gz", ran_letters(32));
+
+            // Authorize
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
@@ -96,14 +116,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?
                 .into_inner();
             println!("[Server responce] {}", key.comment);
-            let token = decrypt(key.key, config.key).expect("Client side auth error occured");
+            let token = decrypt(key.key, config.key)?;
             let request = DownloadRequest { token };
-            let file = client.download(request).await?.into_inner().data;
-            fs::write("worldbackup.tar.gz", file)?;
+            // Download file
+            let mut stream = client.download(request).await?.into_inner();
+            let mut file = fs::File::create(&path)?;
+            while let Some(msg) = stream.message().await? {
+                println!("{}", msg.comment);
+
+                // Check for errors
+                match OpResult::from_i32(msg.result) {
+                    Some(res) => match res {
+                        OpResult::Success => {}
+                        _ => {
+                            // Throw away redundant file to avoid confusion
+                            let _ = std::fs::remove_file(path);
+                            return Ok(());
+                        }
+                    },
+                    _ => {}
+                }
+
+                file.write(&msg.data)?;
+            }
+            // Downlaod complete, show loaction
             let working_directory = std::env::current_dir();
             match working_directory {
-                Ok(wdir) => println!("Saved as {:?} worldbackup.tar.gz", wdir),
-                Err(_) => println!("Download saved as worldbackup.tar.gz"),
+                Ok(wdir) => println!("Saved as {:?} {}", wdir, path),
+                Err(_) => println!("Download saved as {}", path),
             }
             return Ok(());
         }

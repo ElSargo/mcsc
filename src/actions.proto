@@ -5,7 +5,7 @@ service Controller{
   rpc Start    ( StartRequest    ) returns ( OpResponce    );
   rpc Stop     ( StopRequest     ) returns ( OpResponce    );
   rpc Command  ( CommandRequest  ) returns ( OpResponce    );
-  rpc Download ( DownloadRequest ) returns ( WorldDownload );
+  rpc Download ( DownloadRequest ) returns ( stream WorldDownload );
   rpc Backup   ( BackupRequest   ) returns ( OpResponce    );
   rpc Auth     ( AuthRequest     ) returns ( AuthResponce  );
 }
@@ -48,6 +48,7 @@ message WorldDownload{
   OpResult result = 1;
   string comment = 2;
   bytes data = 3;
+  uint64 size = 4;
 }
 
 

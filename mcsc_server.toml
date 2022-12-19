@@ -1,3 +1,4 @@
 socket = "[::1]:50051"
 minecraft_directory = "minecraft"
+backup_directory = "backups"
 key = "Who was in paris?....."

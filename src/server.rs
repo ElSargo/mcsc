@@ -3,8 +3,18 @@
 #[macro_use]
 extern crate lazy_static;
 use actions::controller_server::{Controller, ControllerServer};
+use futures::Stream;
+mod common;
+use common::ran_letters;
 use std::path::PathBuf;
-// use no_panic::no_panic;
+use std::pin::Pin;
+use std::time::SystemTime;
+use std::{
+    fs::File,
+    io::{BufRead, BufReader},
+};
+use tokio::sync::mpsc;
+use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use actions::{
     AuthAction, AuthRequest, AuthResponce, BackupRequest, CommandRequest, DownloadRequest,
     OpResponce, OpResult, StartRequest, StopRequest, WorldDownload,
@@ -13,7 +23,7 @@ use tonic::{transport::Server, Request, Response, Status};
 pub mod actions {
     tonic::include_proto!("actions");
 }
-
+type WDLStream = Pin<Box<dyn Stream<Item = Result<WorldDownload, Status>> + Send>>;
 /// Create a server that will allow users to start, stop a minecraft server as well as download the world file
 #[tokio::main(flavor = "current_thread")] // no need to use many threads as trafic will be very low
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -36,13 +46,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_service(ControllerServer::new(server_loader))
         .serve(socket)
         .await?;
-
     Ok(())
 }
 
 #[derive(serde_derive::Deserialize, Debug)]
 struct Config {
+    // Working directory of minecraft server
     minecraft_directory: String,
+    // Where to store backups relative to minecraft dir
+    backup_directory: String,
     key: String,
     socket: String,
 }
@@ -145,10 +157,11 @@ impl Controller for ControllerService {
     }
 
     /// Requset to download the worldfile
+    type DownloadStream = WDLStream;
     async fn download(
         &self,
         req: Request<DownloadRequest>,
-    ) -> Result<Response<WorldDownload>, Status> {
+    ) -> Result<Response<Self::DownloadStream>, Status> {
         let key = req.into_inner().token;
         if !verify_key(Key {
             key,
@@ -156,28 +169,64 @@ impl Controller for ControllerService {
         }) {
             return Err(Status::new(tonic::Code::InvalidArgument, "Invalid token"));
         }
-        let path = match latest_file("./backups") {
-            Some(path) => path,
-            None => {
-                return Ok(Response::new(WorldDownload {
-                    result: OpResult::Fail.into(),
-                    comment: "Download failed, no backups to download!".to_string(),
-                    data: Vec::new(),
-                }));
-            }
+
+        let file = match latest_file(&CONFIG.backup_directory) {
+            Some(path) => match File::open(path) {
+                Ok(handle) => handle,
+                Err(_) => return Err(Status::not_found("No backups")),
+            },
+            None => return Err(Status::not_found("No backups")),
         };
-        match std::fs::read(path) {
-            Ok(data) => Ok(Response::new(WorldDownload {
-                result: OpResult::Success.into(),
-                comment: "Download succesful".to_string(),
-                data,
-            })),
-            Err(_) => Ok(Response::new(WorldDownload {
-                result: OpResult::Fail.into(),
-                comment: "Download failed, couldn't read file".to_string(),
-                data: Vec::new(),
-            })),
-        }
+
+        // Create iterator that yeilds wolrddownloads
+        let wdl = WDLIter::new(file);
+
+        let mut stream = Box::pin(tokio_stream::iter(wdl));
+
+        let (tx, rx) = mpsc::channel(128);
+        tokio::spawn(async move {
+            while let Some(item) = stream.next().await {
+                match tx.send(Result::<_, Status>::Ok(item)).await {
+                    Ok(_) => {
+                        // item (server response) was queued to be send to client
+                    }
+                    Err(_item) => {
+                        // output_stream was build from rx and both are dropped
+                        break;
+                    }
+                }
+            }
+            println!("\tclient disconnected");
+        });
+
+        let output_stream = ReceiverStream::new(rx);
+        Ok(Response::new(
+            Box::pin(output_stream) as Self::DownloadStream
+        )) /*
+           // let path = match latest_file(&CONFIG.backup_directory) {
+           //     Some(path) => path,
+           //     None => {
+           //         return Ok(Response::new(String
+           //             WorldDownload {
+           //             result: OpResult::Fail.into(),
+           //             comment: "Download failed, no backups to download!".to_string(),
+           //             data: Vec::new(),
+           //         }));
+           //     }
+           // };
+           // match std::fs::read(path) {
+           //     Ok(data) => Ok(Response::new(WorldDownload {
+           //         result: OpResult::Success.into(),
+           //         comment: "Download succesful".to_string(),
+           //         data,
+           //     })),
+           //     Err(_) => Ok(Response::new(WorldDownload {
+           //         result: OpResult::Fail.into(),
+           //         comment: "Download failed, couldn't read file".to_string(),
+           //         data: Vec::new(),
+           //     })),
+           // }
+            */
     }
 
     ///Handle startup request
@@ -193,9 +242,7 @@ impl Controller for ControllerService {
         let mut state = STATE.lock();
         let res = state.start();
         match res {
-            Ok(_) => {
-                respond(OpResult::Success, "Started succesfuly")
-            }
+            Ok(_) => respond(OpResult::Success, "Started succesfuly"),
             Err(start_error) => match start_error {
                 StartError::Launch => respond(OpResult::Fail, "Failed to launch server"),
                 StartError::AlreadyRunning => respond(OpResult::Fail, "Server already running"),
@@ -339,9 +386,7 @@ impl ServerState {
                         *self = Idle;
                         Ok(())
                     }
-                    None => {
-                        Err(StopError::ProccesError)
-                    }
+                    None => Err(StopError::ProccesError),
                 }
             }
             BackingUp => Err(StopError::Downloading),
@@ -356,7 +401,11 @@ impl ServerState {
                 // Compress the file
                 match Command::new("tar")
                     .arg("-czf")
-                    .arg(format!("backups/{}.tar.gz", ran_letters(32)))
+                    .arg(format!(
+                        "{}/{}.tar.gz",
+                        &CONFIG.backup_directory,
+                        ran_letters(32)
+                    ))
                     .arg("world")
                     .spawn()
                 {
@@ -367,6 +416,17 @@ impl ServerState {
                     }
                     Err(_) => {
                         return Err(BackupError::Compression);
+                    }
+                }
+                // remove_oldest_backup("minecraft/backups");
+                {
+                    let mut num_backups = std::fs::read_dir(&CONFIG.backup_directory)
+                        .into_iter()
+                        .flatten()
+                        .count();
+                    while num_backups > 10 {
+                        num_backups -= 1;
+                        remove_oldest_backup(&CONFIG.backup_directory);
                     }
                 }
                 *self = Idle;
@@ -444,7 +504,16 @@ fn latest_file(dir: &str) -> Option<PathBuf> {
     }
     .into_iter();
 
-    match files
+    match iter_paths_with_sys_time(files).max_by_key(|t| t.1) {
+        Some(tuple) => Some(tuple.0),
+        None => None,
+    }
+}
+
+fn iter_paths_with_sys_time(
+    files: std::fs::ReadDir,
+) -> impl Iterator<Item = (PathBuf, SystemTime)> + 'static {
+    files
         .flatten()
         .map(|f| f.path())
         .map(|p| {
@@ -458,46 +527,73 @@ fn latest_file(dir: &str) -> Option<PathBuf> {
             Some((p, time))
         })
         .flatten()
-        .max_by_key(|t| t.1)
-    {
-        Some(tuple) => Some(tuple.0),
-        None => None,
+}
+
+pub fn remove_oldest_backup(dir: &str) {
+    let files = match std::fs::read_dir(dir) {
+        Ok(files) => files,
+        Err(_) => return,
+    }
+    .into_iter();
+
+    match iter_paths_with_sys_time(files).min_by_key(|t| t.1) {
+        Some(tuple) => {
+            let _ = std::fs::remove_file(tuple.0);
+        }
+        _ => {}
+    };
+}
+
+struct WDLIter {
+    file_reader: BufReader<File>,
+    error: bool,
+    read: usize,
+    size: usize,
+}
+
+impl WDLIter {
+    fn new(file: File) -> Self {
+        Self {
+            size: file.metadata().unwrap().len() as usize,
+            file_reader: BufReader::with_capacity(1024 * 1024, file),
+            read: 0,
+            error: false,
+        }
     }
 }
 
-fn ran_letters(len: usize) -> String {
-    let mut string = String::with_capacity(len);
-    let mut rng = thread_rng();
-    for _ in 0..len {
-        string.push(match rng.gen_range(0..26) {
-            0 => 'a',
-            1 => 'b',
-            2 => 'c',
-            3 => 'd',
-            4 => 'e',
-            5 => 'f',
-            6 => 'g',
-            7 => 'h',
-            8 => 'i',
-            9 => 'j',
-            10 => 'k',
-            11 => 'l',
-            12 => 'm',
-            13 => 'n',
-            14 => 'o',
-            15 => 'p',
-            16 => 'q',
-            17 => 'r',
-            18 => 's',
-            19 => 't',
-            20 => 'u',
-            21 => 'v',
-            22 => 'w',
-            23 => 'x',
-            24 => 'y',
-            _ => 'z',
-        });
-    }
+impl Iterator for WDLIter {
+    type Item = WorldDownload;
 
-    string
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.error{
+            return None;
+        }
+        let bytes: Vec<u8> = match self.file_reader.fill_buf() {
+            Ok(buff) => buff.to_vec(),
+            Err(_) => {
+                self.error = true;
+                return Some(WorldDownload {
+                    result: OpResult::Fail.into(),
+                    size: self.size as u64,
+                    comment: format!("Download failed"),
+                    data: vec![],
+                });
+
+            }
+        };
+        self.file_reader.consume(bytes.len());
+        self.read += bytes.len();
+        let progresss = (self.read as f64 / self.size as f64 * 100.) as u64;
+        if !bytes.is_empty() {
+            Some(WorldDownload {
+                result: OpResult::Success.into(),
+                size: self.size as u64,
+                comment: format!("Download progress: {progresss}%"),
+                data: bytes,
+            })
+        } else {
+            None
+        }
+    }
 }

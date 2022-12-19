@@ -11,10 +11,6 @@ path = "src/server.rs"
 name = "client"
 path = "src/client.rs"
 
-[[bin]]
-name = "testing"
-path = "src/testing.rs"
-
 [dependencies]
 tonic = "*"
 prost = "*"
@@ -27,6 +23,8 @@ serde_derive = "*"
 lazy_static = "*"
 parking_lot = "*"
 antidote = "*"
+tokio-stream = "*"
+futures = { version = "*", default-features = false, features = ["alloc"] }
 
 [build-dependencies]
 tonic-build = "*"
