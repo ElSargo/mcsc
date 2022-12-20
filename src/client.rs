@@ -20,14 +20,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "
-Enter a command: 
+Enter a command: either by name or the number next to it
 0|\"Start\" to request a startup or 
 1|\"Stop\" to request a shutdown or 
 2|\"Backup\" to create a backup or 
 3|\"Command\" to run a command
 4|\"Download\" to download the latest backup
-"
-    );
+");
 
     let mut input = String::new();
     let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -48,7 +47,7 @@ Enter a command:
                 })
                 .await?
                 .into_inner();
-            println!("[Server responce] {}", key.comment);
+            println!("[Server connection status: {}]", key.comment);
             let token = decrypt(key.key, config.key).expect("Client side auth error occured");
             let request = StartRequest { token };
             responce = client.start(request).await?;
@@ -63,7 +62,7 @@ Enter a command:
                 })
                 .await?
                 .into_inner();
-            println!("[Server responce] {}", key.comment);
+            println!("[Server connection status: {}]", key.comment);
             let token = decrypt(key.key, config.key).expect("Client side auth error occured");
             let request = StopRequest { token };
             responce = client.stop(request).await?;
@@ -78,7 +77,7 @@ Enter a command:
                 })
                 .await?
                 .into_inner();
-            println!("[Server responce] {}", key.comment);
+            println!("[Server connection status: {}]", key.comment);
             let token = decrypt(key.key, config.key)?;
             let request = BackupRequest { token };
             responce = client.backup(request).await?;
@@ -100,7 +99,7 @@ Enter a command:
                 })
                 .await?
                 .into_inner();
-            println!("[Server responce] {}", key.comment);
+            println!("[Server connection status: {}]", key.comment);
             let token = decrypt(key.key, config.key)?;
             let request = CommandRequest {
                 token,
@@ -122,7 +121,7 @@ Enter a command:
                 })
                 .await?
                 .into_inner();
-            println!("[Server responce] {}", key.comment);
+            println!("[Server connection status: {}]", key.comment);
             let token = decrypt(key.key, config.key)?;
             let request = DownloadRequest { token };
             // Download file
