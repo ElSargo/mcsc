@@ -1,29 +1,38 @@
-#![forbid(unsafe_code)]
-
 #[macro_use]
 extern crate lazy_static;
-use actions::controller_server::{Controller, ControllerServer};
-use futures::Stream;
+
 mod common;
+mod actions {
+    tonic::include_proto!("actions");
+}
+
 use actions::{
+    controller_server::{Controller, ControllerServer},
     AuthAction, AuthRequest, AuthResponce, BackupRequest, CommandRequest, DownloadRequest,
     OpResponce, OpResult, StartRequest, StopRequest, WorldDownload,
 };
-use common::ran_letters;
-use std::path::PathBuf;
-use std::pin::Pin;
-use std::time::SystemTime;
+use futures::Stream;
+use magic_crypt::{new_magic_crypt, MagicCrypt256, MagicCryptTrait};
+use rand::prelude::*;
 use std::{
+    collections::HashSet,
     fs::File,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
+    path::PathBuf,
+    pin::Pin,
+    process::{Child, Command, Stdio},
+    sync::Mutex,
+    time::SystemTime,
 };
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{transport::Server, Request, Response, Status};
-pub mod actions {
-    tonic::include_proto!("actions");
-}
-type WDLStream = Pin<Box<dyn Stream<Item = Result<WorldDownload, Status>> + Send>>;
+use ServerState::*;
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Server setup
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 /// Create a server that will allow users to start, stop a minecraft server as well as download the world file
 #[tokio::main(flavor = "current_thread")] // no need to use many threads as trafic will be very low
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -47,21 +56,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .serve(socket)
         .await?;
     Ok(())
-}
-
-#[derive(serde_derive::Deserialize, Debug)]
-struct Config {
-    // Working directory of minecraft server
-    minecraft_directory: String,
-    // Where to store backups relative to minecraft dir
-    backup_directory: String,
-    key: String,
-    socket: String,
-}
-
-fn config_load() -> Config {
-    let conf = std::fs::read("mcsc_server.toml").expect("Unable to load config file");
-    toml::from_slice(&conf).expect("Unable to parse config, (syntax error)")
 }
 
 /// Used to set up our server, we will impl all methods outlined in proto/actions.proto on this struct
@@ -202,31 +196,7 @@ impl Controller for ControllerService {
         let output_stream = ReceiverStream::new(rx);
         Ok(Response::new(
             Box::pin(output_stream) as Self::DownloadStream
-        )) /*
-           // let path = match latest_file(&CONFIG.backup_directory) {
-           //     Some(path) => path,
-           //     None => {
-           //         return Ok(Response::new(String
-           //             WorldDownload {
-           //             result: OpResult::Fail.into(),
-           //             comment: "Download failed, no backups to download!".to_string(),
-           //             data: Vec::new(),
-           //         }));
-           //     }
-           // };
-           // match std::fs::read(path) {
-           //     Ok(data) => Ok(Response::new(WorldDownload {
-           //         result: OpResult::Success.into(),
-           //         comment: "Download succesful".to_string(),
-           //         data,
-           //     })),
-           //     Err(_) => Ok(Response::new(WorldDownload {
-           //         result: OpResult::Fail.into(),
-           //         comment: "Download failed, couldn't read file".to_string(),
-           //         data: Vec::new(),
-           //     })),
-           // }
-            */
+        ))
     }
 
     ///Handle startup request
@@ -280,121 +250,20 @@ impl Controller for ControllerService {
     }
 }
 
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Server state managent using the state machine pattern
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
-pub enum ServerState {
+enum ServerState {
     Idle,
     Running { procces: Child },
     BackingUp,
 }
 
-#[derive(Debug)]
-pub enum StopError {
-    Idle,
-    Downloading,
-    ProccesError,
-}
-
-#[derive(Debug)]
-pub enum StartError {
-    Launch,
-    AlreadyRunning,
-    Downloading,
-}
-
-#[derive(Debug)]
-pub enum BackupError {
-    ServerRunning,
-    OtherBackup,
-    Compression,
-}
-
-#[derive(Debug)]
-pub enum CommandError {
-    Idle,
-    Downloading,
-    ProccesError,
-}
-
 impl ServerState {
-    pub fn check_stop(&mut self) {
-        if let Running { procces: c } = self {
-            let res = c.try_wait();
-            if let Ok(possible_exit_code) = res {
-                if let Some(_exit_code) = possible_exit_code {
-                    //Procces finished
-                    *self = Idle;
-                }
-            }
-        }
-    }
-
-    pub fn run_command(&mut self, cmd: &str) -> Result<(), CommandError> {
-        match self {
-            Running { procces } => {
-                let pstdin = procces.stdin.as_mut();
-                match pstdin {
-                    Some(buff) => match buff.write_all(&format!("\n{}\n", cmd).into_bytes()) {
-                        Err(_) => Err(CommandError::ProccesError),
-                        _ => Ok(()),
-                    },
-                    None => Err(CommandError::ProccesError),
-                }
-            }
-            Idle => Err(CommandError::Idle),
-            BackingUp => Err(CommandError::Downloading),
-        }
-    }
-
-    /// Spawn a new java procces and store it in MINECRAFT_SERVER_STATE
-    pub fn start(&mut self) -> Result<(), StartError> {
-        self.check_stop();
-        match self {
-            Idle => {
-                let child = match Command::new("sh")
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .arg("launch.sh")
-                    .spawn()
-                {
-                    Ok(child) => child,
-                    Err(_c) => return Err(StartError::Launch),
-                };
-                *self = Running { procces: child };
-                Ok(())
-            }
-            BackingUp => Err(StartError::Downloading),
-            Running { procces: _ } => Err(StartError::AlreadyRunning),
-        }
-    }
-
-    /// Stop the running procces by entering stop into the stdin
-    pub fn stop(&mut self) -> Result<(), StopError> {
-        self.check_stop();
-        match self {
-            Running { procces: child } => {
-                let child_input = child.stdin.as_mut();
-                match child_input {
-                    Some(buff) => {
-                        match buff.write_all(b"\nstop\n") {
-                            Err(_) => return Err(StopError::ProccesError),
-                            _ => {}
-                        };
-                        match child.wait() {
-                            Ok(_) => {}
-                            Err(_) => {}
-                        }
-                        *self = Idle;
-                        Ok(())
-                    }
-                    None => Err(StopError::ProccesError),
-                }
-            }
-            BackingUp => Err(StopError::Downloading),
-            Idle => Err(StopError::Idle),
-        }
-    }
-
-    pub fn backup(&mut self) -> Result<(), BackupError> {
+    fn backup(&mut self) -> Result<(), BackupError> {
+        use ServerState::*;
         match self {
             Idle => {
                 *self = BackingUp;
@@ -404,7 +273,7 @@ impl ServerState {
                     .arg(format!(
                         "{}/{}.tar.gz",
                         &CONFIG.backup_directory,
-                        ran_letters(32)
+                        common::ran_letters(32)
                     ))
                     .arg("world")
                     .spawn()
@@ -436,11 +305,113 @@ impl ServerState {
             BackingUp => Err(BackupError::OtherBackup),
         }
     }
+
+    fn check_stop(&mut self) {
+        if let Running { procces: c } = self {
+            let res = c.try_wait();
+            if let Ok(possible_exit_code) = res {
+                if let Some(_exit_code) = possible_exit_code {
+                    //Procces finished
+                    *self = Idle;
+                }
+            }
+        }
+    }
+
+    fn run_command(&mut self, cmd: &str) -> Result<(), CommandError> {
+        match self {
+            Running { procces } => {
+                let pstdin = procces.stdin.as_mut();
+                match pstdin {
+                    Some(buff) => match buff.write_all(&format!("\n{}\n", cmd).into_bytes()) {
+                        Err(_) => Err(CommandError::ProccesError),
+                        _ => Ok(()),
+                    },
+                    None => Err(CommandError::ProccesError),
+                }
+            }
+            Idle => Err(CommandError::Idle),
+            BackingUp => Err(CommandError::Downloading),
+        }
+    }
+
+    /// Spawn a new java procces and store it in MINECRAFT_SERVER_STATE
+    fn start(&mut self) -> Result<(), StartError> {
+        self.check_stop();
+        match self {
+            Idle => {
+                let child = match Command::new("sh")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .arg("launch.sh")
+                    .spawn()
+                {
+                    Ok(child) => child,
+                    Err(_c) => return Err(StartError::Launch),
+                };
+                *self = Running { procces: child };
+                Ok(())
+            }
+            BackingUp => Err(StartError::Downloading),
+            Running { procces: _ } => Err(StartError::AlreadyRunning),
+        }
+    }
+
+    /// Stop the running procces by entering stop into the stdin
+    fn stop(&mut self) -> Result<(), StopError> {
+        self.check_stop();
+        match self {
+            Running { procces: child } => {
+                let child_input = child.stdin.as_mut();
+                match child_input {
+                    Some(buff) => {
+                        match buff.write_all(b"\nstop\n") {
+                            Err(_) => return Err(StopError::ProccesError),
+                            _ => {}
+                        };
+                        match child.wait() {
+                            Ok(_) => {}
+                            Err(_) => {}
+                        }
+                        *self = Idle;
+                        Ok(())
+                    }
+                    None => Err(StopError::ProccesError),
+                }
+            }
+            BackingUp => Err(StopError::Downloading),
+            Idle => Err(StopError::Idle),
+        }
+    }
 }
 
-use std::io::Write;
-use std::process::{Child, Command, Stdio};
-use ServerState::*;
+#[derive(Debug)]
+enum StopError {
+    Idle,
+    Downloading,
+    ProccesError,
+}
+
+#[derive(Debug)]
+enum StartError {
+    Launch,
+    AlreadyRunning,
+    Downloading,
+}
+
+#[derive(Debug)]
+enum BackupError {
+    ServerRunning,
+    OtherBackup,
+    Compression,
+}
+
+#[derive(Debug)]
+ enum CommandError {
+    Idle,
+    Downloading,
+    ProccesError,
+}
 
 lazy_static! {
     static ref CONFIG: crate::Config = crate::config_load();
@@ -448,9 +419,10 @@ lazy_static! {
     static ref STATE: antidote::Mutex<ServerState> = antidote::Mutex::new(Idle);
 }
 
-use magic_crypt::{new_magic_crypt, MagicCrypt256, MagicCryptTrait};
-use rand::prelude::*;
-use std::{collections::HashSet, sync::Mutex};
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Security
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 lazy_static! {
     static ref CRYPT: MagicCrypt256 = new_magic_crypt!(CONFIG.key.clone(), 256);
     static ref SOCKET: String = CONFIG.socket.clone();
@@ -460,12 +432,12 @@ lazy_static! {
 const KEY_BYTES: usize = 256;
 
 #[derive(Eq, Clone, Hash, PartialEq, Debug)]
-pub struct Key {
-    pub action: AuthAction,
-    pub key: Vec<u8>,
+struct Key {
+    action: AuthAction,
+    key: Vec<u8>,
 }
 
-pub fn encrypt(data: Vec<u8>) -> Vec<u8> {
+fn encrypt(data: Vec<u8>) -> Vec<u8> {
     CRYPT.encrypt_bytes_to_bytes(&data)
 }
 
@@ -480,7 +452,7 @@ fn gen_bytes(key_bytes: usize) -> Vec<u8> {
 }
 
 /// Create a new key to give to our client, we will store it so it can be verified later
-pub fn gen_key(action: AuthAction) -> Vec<u8> {
+fn gen_key(action: AuthAction) -> Vec<u8> {
     // Keys must be initialised before use
     let mut set = KEYS.lock().expect("Mutex poisoned");
     let bytes = gen_bytes(KEY_BYTES);
@@ -491,11 +463,15 @@ pub fn gen_key(action: AuthAction) -> Vec<u8> {
     bytes
 }
 /// Check that a key has been authored by us
-pub fn verify_key(key: Key) -> bool {
+fn verify_key(key: Key) -> bool {
     let mut set = KEYS.lock().expect("Mutex poisend");
     let res = set.remove(&key);
     res
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Backup stuff
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 fn latest_file(dir: &str) -> Option<PathBuf> {
     let files = match std::fs::read_dir(dir) {
@@ -529,7 +505,7 @@ fn iter_paths_with_sys_time(
         .flatten()
 }
 
-pub fn remove_oldest_backup(dir: &str) {
+fn remove_oldest_backup(dir: &str) {
     let files = match std::fs::read_dir(dir) {
         Ok(files) => files,
         Err(_) => return,
@@ -543,6 +519,10 @@ pub fn remove_oldest_backup(dir: &str) {
         _ => {}
     };
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// World Download types
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct WDLIter {
     file_reader: BufReader<File>,
@@ -561,6 +541,9 @@ impl WDLIter {
         }
     }
 }
+
+// bruh
+type WDLStream = Pin<Box<dyn Stream<Item = Result<WorldDownload, Status>> + Send>>;
 
 impl Iterator for WDLIter {
     type Item = WorldDownload;
@@ -596,3 +579,30 @@ impl Iterator for WDLIter {
         }
     }
 }
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Config
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(serde_derive::Deserialize, Debug)]
+struct Config {
+    /// Working directory of minecraft server
+    minecraft_directory: String,
+    /// Where to store backups relative to minecraft dir
+    backup_directory: String,
+    /// Clients need to have this to authenticate their actions
+    key: String,
+    /// Service runs from this socket
+    socket: String,
+}
+
+/// Load the config file and parse it into a convient data structure
+///
+/// Panics if the config file couln't be loaded or parsed
+///
+fn config_load() -> Config {
+    let conf = std::fs::read("mcsc_server.toml").expect("Unable to load config file");
+    toml::from_slice(&conf).expect("Unable to parse config, (syntax error)")
+}
+

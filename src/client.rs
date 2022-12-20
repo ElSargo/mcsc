@@ -1,16 +1,17 @@
-use std::io::Write;
 mod common;
 pub mod actions {
     tonic::include_proto!("actions");
 }
-use actions::controller_client::ControllerClient;
-use actions::{AuthRequest, DownloadRequest, OpResponce, OpResult, StartRequest, StopRequest};
+
+use actions::{
+    controller_client::ControllerClient, AuthRequest, DownloadRequest, OpResponce, OpResult,
+    StartRequest, StopRequest, AuthAction, BackupRequest, CommandRequest
+};
 use common::ran_letters;
-use security::decrypt;
-use std::fs;
-use std::thread::sleep;
-use std::time::Duration;
+use std::{fs, io::Write, thread::sleep, time::Duration};
 use tonic::Response;
+use serde_derive::Deserialize;
+use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,6 +38,8 @@ Enter a command:
     let responce: Response<OpResponce>;
 
     match input.as_str() {
+
+        // Starts the server, does not wait for it to be ready or for a launch fail
         "0\n" | "Start\n" => {
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
@@ -51,6 +54,7 @@ Enter a command:
             responce = client.start(request).await?;
         }
 
+        // Stops the server by sending the stop command to stdin
         "1\n" | "Stop\n" => {
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
@@ -65,6 +69,7 @@ Enter a command:
             responce = client.stop(request).await?;
         }
 
+        // Signals the server to backup the world to a compressed archive
         "2\n" | "Backup\n" => {
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
@@ -79,6 +84,7 @@ Enter a command:
             responce = client.backup(request).await?;
         }
 
+        // Attemps to run a minecraft command
         "3\n" | "Command\n" => {
             print!("Enter command \n=> ");
             let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -103,6 +109,7 @@ Enter a command:
             responce = client.command(request).await?;
         }
 
+        // Downloads the latest backup from the server    
         "4\n" | "Download\n" => {
             // Generate file name
             let path = format!("worldbackup-[{}].tar.gz", ran_letters(32));
@@ -148,6 +155,7 @@ Enter a command:
             return Ok(());
         }
 
+        // No action recgnised
         _ => {
             println!("Invalid input");
             sleep(Duration::from_secs(1));
@@ -174,10 +182,6 @@ Enter a command:
     Ok(())
 }
 
-use serde_derive::Deserialize;
-
-use crate::actions::{AuthAction, BackupRequest, CommandRequest};
-
 #[derive(Deserialize, Debug)]
 struct Config {
     ip: String,
@@ -189,11 +193,7 @@ fn read_config() -> Config {
     toml::from_slice(&text).expect("No config file!")
 }
 
-mod security {
-    use magic_crypt::{new_magic_crypt, MagicCryptTrait};
-
-    pub fn decrypt(data: Vec<u8>, key: String) -> Result<Vec<u8>, magic_crypt::MagicCryptError> {
-        let key = new_magic_crypt!(key, 256);
-        Ok(key.decrypt_bytes_to_bytes(&data)?)
-    }
+pub fn decrypt(data: Vec<u8>, key: String) -> Result<Vec<u8>, magic_crypt::MagicCryptError> {
+    let key = new_magic_crypt!(key, 256);
+    Ok(key.decrypt_bytes_to_bytes(&data)?)
 }
