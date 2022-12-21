@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = read_config();
     println!("Config: {:?}", config);
 
-    println!(
+    print!(
         "
 Enter a command: either by name or the number next to it
 0|\"Start\" to request a startup or 
@@ -26,7 +26,7 @@ Enter a command: either by name or the number next to it
 2|\"Backup\" to create a backup or 
 3|\"Command\" to run a command
 4|\"Download\" to download the latest backup
-");
+=>");
 
     let mut input = String::new();
     let _ = std::io::Write::flush(&mut std::io::stdout());

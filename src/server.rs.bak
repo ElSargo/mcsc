@@ -11,7 +11,7 @@ use actions::{
     AuthAction, AuthRequest, AuthResponce, BackupRequest, CommandRequest, DownloadRequest,
     OpResponce, OpResult, StartRequest, StopRequest, WorldDownload,
 };
-use antidote::RwLock;
+use antidote::Mutex;
 use futures::Stream;
 use magic_crypt::{new_magic_crypt, MagicCrypt256, MagicCryptTrait};
 use rand::prelude::*;
@@ -34,7 +34,6 @@ use ServerState::*;
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Create a server that will allow users to start, stop a minecraft server as well as download the world file
-// #[tokio::main]
 #[tokio::main(flavor = "current_thread")] // no need to use many threads as trafic will be very low
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
@@ -103,7 +102,7 @@ impl Controller for ControllerService {
         }) {
             return Err(Status::new(tonic::Code::InvalidArgument, "Invalid token"));
         }
-        let mut state = STATE.write();
+        let mut state = STATE.lock();
         let result = state.backup();
         match result {
             Ok(_) => respond(OpResult::Success, "Backed up succesfuly"),
@@ -129,7 +128,7 @@ impl Controller for ControllerService {
         }) {
             return respond(OpResult::Denied, "Invalid token");
         }
-        let mut state = STATE.write();
+        let mut state = STATE.lock();
         let res = state.run_command(&req.command);
         match res {
             Err(command_error) => {
@@ -213,7 +212,7 @@ impl Controller for ControllerService {
             return respond(OpResult::Denied, "Invalid Token");
         }
 
-        let mut state = STATE.write();
+        let mut state = STATE.lock();
         let res = state.start();
         match res {
             Ok(_) => respond(OpResult::Success, "Started succesfuly"),
@@ -237,7 +236,7 @@ impl Controller for ControllerService {
         }) {
             return respond(OpResult::Denied, "Invalid token");
         }
-        let mut state = STATE.write();
+        let mut state = STATE.lock();
         let res = state.stop();
         match res {
             Err(stop_error) => match stop_error {
@@ -420,7 +419,7 @@ enum BackupError {
 lazy_static! {
     static ref CONFIG: crate::Config = crate::config_load();
     /// Contains the current procces of the minecraft server and it's stdin
-    static ref STATE: RwLock<ServerState> = RwLock::new(Idle);
+    static ref STATE: Mutex<ServerState> = Mutex::new(Idle);
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -431,7 +430,7 @@ lazy_static! {
     static ref CRYPT: MagicCrypt256 = new_magic_crypt!(CONFIG.key.clone(), 256);
     static ref SOCKET: String = CONFIG.socket.clone();
     static ref KEY: String = CONFIG.key.clone();
-    static ref KEYS: RwLock<HashSet<Key>> = RwLock::new(HashSet::new());
+    static ref KEYS: Mutex<HashSet<Key>> = Mutex::new(HashSet::new());
 }
 const KEY_BYTES: usize = 256;
 
@@ -458,7 +457,7 @@ fn gen_bytes(key_bytes: usize) -> Vec<u8> {
 /// Create a new key to give to our client, and store it so it can be verified later
 fn authorize_key(action: AuthAction) -> Vec<u8> {
     // Keys must be initialised before use
-    let mut set = KEYS.write();
+    let mut set = KEYS.lock();
     let bytes = gen_bytes(KEY_BYTES);
     set.insert(Key {
         key: bytes.clone(),
@@ -468,7 +467,7 @@ fn authorize_key(action: AuthAction) -> Vec<u8> {
 }
 /// Check that a key has been authored by us
 fn verify_key(key: Key) -> bool {
-    let mut set = KEYS.write();
+    let mut set = KEYS.lock();
     let res = set.remove(&key);
     res
 }
