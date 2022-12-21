@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     print!(
         "
-Welcome to mcsc, NOTE: these opperations take time to complete so be patent
+Welcome to mcsc, NOTE: these operations take time to complete so be patent
 Enter a command: either by name or the number next to it
 0|\"Start\" to request a startup or 
 1|\"Stop\" to request a shutdown or 
@@ -35,12 +35,12 @@ Enter a command: either by name or the number next to it
         .read_line(&mut input)
         .expect("Could not read input");
 
-    let responce: Response<OpResponce>;
+    let response: Response<OpResponce>;
 
     match input.as_str() {
         // Starts the server, does not wait for it to be ready or for a launch fail
         "0\n" | "Start\n" => {
-            println!("[Awaing serveer responce...]");
+            println!("[Awaiting server response...]");
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
@@ -49,14 +49,14 @@ Enter a command: either by name or the number next to it
                 .await?
                 .into_inner();
             println!("[Server connection status: {}]", key.comment);
-            let token = decrypt(key.key, config.key).expect("Client side auth error occured");
+            let token = decrypt(key.key, config.key).expect("Client side auth error occurred");
             let request = StartRequest { token };
-            responce = client.start(request).await?;
+            response = client.start(request).await?;
         }
 
         // Stops the server by sending the stop command to stdin
         "1\n" | "Stop\n" => {
-            println!("[Awaing serveer responce...]");
+            println!("[Awaiting server response...]");
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
@@ -65,14 +65,14 @@ Enter a command: either by name or the number next to it
                 .await?
                 .into_inner();
             println!("[Server connection status: {}]", key.comment);
-            let token = decrypt(key.key, config.key).expect("Client side auth error occured");
+            let token = decrypt(key.key, config.key).expect("Client side auth error occurred");
             let request = StopRequest { token };
-            responce = client.stop(request).await?;
+            response = client.stop(request).await?;
         }
 
         // Signals the server to backup the world to a compressed archive
         "2\n" | "Backup\n" => {
-            println!("[Awaing serveer responce...]");
+            println!("[Awaiting server response...]");
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
@@ -83,10 +83,10 @@ Enter a command: either by name or the number next to it
             println!("[Server connection status: {}]", key.comment);
             let token = decrypt(key.key, config.key)?;
             let request = BackupRequest { token };
-            responce = client.backup(request).await?;
+            response = client.backup(request).await?;
         }
 
-        // Attemps to run a minecraft command
+        // Attempts to run a minecraft command
         "3\n" | "Command\n" => {
             print!("Enter command \n=> ");
             let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -95,7 +95,7 @@ Enter a command: either by name or the number next to it
                 println!("Error reading input");
                 return Ok(());
             }
-            println!("[Awaing serveer responce...]");
+            println!("[Awaiting server response...]");
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
@@ -109,12 +109,12 @@ Enter a command: either by name or the number next to it
                 token,
                 command: command.to_string(),
             };
-            responce = client.command(request).await?;
+            response = client.command(request).await?;
         }
 
         // Downloads the latest backup from the server
         "4\n" | "Download\n" => {
-            println!("[Awaing serveer responce...]");
+            println!("[Awaiting server response...]");
             // Generate file name
             let path = format!("worldbackup-[{}].tar.gz", ran_letters(32));
 
@@ -150,7 +150,7 @@ Enter a command: either by name or the number next to it
 
                 file.write(&msg.data)?;
             }
-            // Downlaod complete, show loaction
+            // Download complete, show location
             let working_directory = std::env::current_dir();
             match working_directory {
                 Ok(wdir) => println!("Saved as {:?} {}", wdir, path),
@@ -159,17 +159,17 @@ Enter a command: either by name or the number next to it
             return Ok(());
         }
 
-        // No action recgnised
+        // No action recognised
         _ => {
             println!("Invalid input");
             sleep(Duration::from_secs(1));
             std::process::exit(0);
         }
     }
-    let success = responce.into_inner();
+    let success = response.into_inner();
     match success.result {
         0 => {
-            println!("Succes!, server comment: {}", success.comment)
+            println!("Success!, server comment: {}", success.comment)
         }
         1 => {
             println!("Failed!, server comment: {}", success.comment)
@@ -178,7 +178,7 @@ Enter a command: either by name or the number next to it
             println!("Denied!, server comment: {}", success.comment)
         }
         _ => {
-            println!("Somthing fucked up!, server comment: {}", success.comment)
+            println!("Something fucked up!, server comment: {}", success.comment)
         }
     }
 

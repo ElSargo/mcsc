@@ -35,7 +35,7 @@ use ServerState::*;
 
 /// Create a server that will allow users to start, stop a minecraft server as well as download the world file
 // #[tokio::main]
-#[tokio::main(flavor = "current_thread")] // no need to use many threads as trafic will be very low
+#[tokio::main(flavor = "current_thread")] // no need to use many threads as traffic will be very low
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         // Change working dir that of .minecraft
@@ -46,9 +46,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut working_directory = current_working_directory.to_path_buf();
         working_directory.push(minecraft_directory);
         std::env::set_current_dir(&working_directory)
-            .expect(format!("Unable to set workingdir to {:?}", working_directory).as_ref());
+            .expect(format!("Unable to set working-dir to {:?}", working_directory).as_ref());
     }
-    //TODO change to real socket once on the actuall server
+    //TODO change to real socket once on the actual server
     let socket = CONFIG.socket.parse()?;
     let server_loader = ControllerService::default();
     println!("Starting service");
@@ -86,12 +86,12 @@ impl Controller for ControllerService {
             }
         };
         let key = authorize_key(action);
-        let encypted_key = encrypt(key);
+        let encrypted_key = encrypt(key);
         let result = OpResult::Success.into();
         Ok(Response::new(AuthResponce {
             result,
-            key: encypted_key,
-            comment: "Succces".to_string(),
+            key: encrypted_key,
+            comment: "Success".to_string(),
         }))
     }
 
@@ -106,9 +106,9 @@ impl Controller for ControllerService {
         let mut state = STATE.write();
         let result = state.backup();
         match result {
-            Ok(_) => respond(OpResult::Success, "Backed up succesfuly"),
+            Ok(_) => respond(OpResult::Success, "Backed up successfully"),
             Err(download_error) => match download_error {
-                BackupError::OtherBackup => respond(OpResult::Fail, "backed up succesfuly"),
+                BackupError::OtherBackup => respond(OpResult::Fail, "backed up successfully"),
                 BackupError::ServerRunning => {
                     respond(OpResult::Fail, "Back up failed, server still running")
                 }
@@ -135,10 +135,10 @@ impl Controller for ControllerService {
             Err(command_error) => {
                 match command_error{
                     CommandError::Idle => {
-                        respond(OpResult::Fail, "Server idle, comamnd can't be run")
+                        respond(OpResult::Fail, "Server idle, command can't be run")
                     },
                     CommandError::Downloading=> {
-                        respond(OpResult::Fail, "Download in progress! Comamnd can't be run")
+                        respond(OpResult::Fail, "Download in progress! Command can't be run")
                     },
                     CommandError::ProccesError => {
                         respond(OpResult::Fail, "Error running command on procces")
@@ -146,12 +146,12 @@ impl Controller for ControllerService {
                 }
             }
             Ok(_) => {
-                respond(OpResult::Success, "Command ran succesfully! note this does not nessisarly mean the command was valid only that it's execution was attempted")
+                respond(OpResult::Success, "Command ran successfully! note this does not necessarily mean the command was valid only that it's execution was attempted")
             }
         }
     }
 
-    /// Requset to download the worldfile
+    /// Request to download the world-file
     type DownloadStream = WDLStream;
     async fn download(
         &self,
@@ -173,7 +173,7 @@ impl Controller for ControllerService {
             None => return Err(Status::not_found("No backups")),
         };
 
-        // Create iterator that yeilds wolrddownloads
+        // Create iterator that yields WorldDownload
         let wdl = match WDLIter::new(file) {
             Some(dl) => dl,
             None => return Err(Status::aborted("Unable to fetch file metadata")),
@@ -181,7 +181,7 @@ impl Controller for ControllerService {
 
         let mut stream = Box::pin(tokio_stream::iter(wdl));
 
-        let (send_channel, recive_channel) = mpsc::channel(128);
+        let (send_channel, receive_channel) = mpsc::channel(128);
         tokio::spawn(async move {
             while let Some(item) = stream.next().await {
                 match send_channel.send(Result::<_, Status>::Ok(item)).await {
@@ -189,7 +189,7 @@ impl Controller for ControllerService {
                         // item (server response) was queued to be send to client
                     }
                     Err(_item) => {
-                        // output_stream was build from recive_channel and both are dropped
+                        // output_stream was build from receive_channel and both are dropped
                         break;
                     }
                 }
@@ -197,7 +197,7 @@ impl Controller for ControllerService {
             println!("\tclient disconnected");
         });
 
-        let output_stream = ReceiverStream::new(recive_channel);
+        let output_stream = ReceiverStream::new(receive_channel);
         Ok(Response::new(
             Box::pin(output_stream) as Self::DownloadStream
         ))
@@ -216,18 +216,18 @@ impl Controller for ControllerService {
         let mut state = STATE.write();
         let res = state.start();
         match res {
-            Ok(_) => respond(OpResult::Success, "Started succesfuly"),
+            Ok(_) => respond(OpResult::Success, "Started successfully"),
             Err(start_error) => match start_error {
                 StartError::Launch => respond(OpResult::Fail, "Failed to launch server"),
                 StartError::AlreadyRunning => respond(OpResult::Fail, "Server already running"),
                 StartError::Downloading => {
-                    respond(OpResult::Fail, "Download in proggress! Can't start")
+                    respond(OpResult::Fail, "Download in progress! Can't start")
                 }
             },
         }
     }
 
-    /// Handle stoping
+    /// Handle stopping
     async fn stop(&self, req: Request<StopRequest>) -> Result<Response<OpResponce>, Status> {
         let key = req.into_inner().token;
         use AuthAction;
@@ -243,19 +243,19 @@ impl Controller for ControllerService {
             Err(stop_error) => match stop_error {
                 StopError::ProccesError => respond(
                     OpResult::Fail,
-                    "Error occured while stopping server procces",
+                    "Error occurred while stopping server procces",
                 ),
                 _ => respond(OpResult::Fail, "Server already idle"),
             },
             Ok(_) => {
-                return respond(OpResult::Success, "Server stopped successfuly");
+                return respond(OpResult::Success, "Server stopped successfully");
             }
         }
     }
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Server state managent using the state machine pattern
+// Server state management using the state machine pattern
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -445,7 +445,7 @@ fn encrypt(data: Vec<u8>) -> Vec<u8> {
     CRYPT.encrypt_bytes_to_bytes(&data)
 }
 
-/// Generate some some random bytes for authentification
+/// Generate some some random bytes for authentication
 fn gen_bytes(key_bytes: usize) -> Vec<u8> {
     let mut rng = thread_rng();
     let mut bytes: Vec<u8> = Vec::with_capacity(key_bytes);
@@ -575,12 +575,12 @@ impl Iterator for WDLIter {
         };
         self.file_reader.consume(bytes.len());
         self.read += bytes.len();
-        let progresss = (self.read as f64 / self.size as f64 * 100.) as u64;
+        let progress = (self.read as f64 / self.size as f64 * 100.) as u64;
         if !bytes.is_empty() {
             Some(WorldDownload {
                 result: OpResult::Success.into(),
                 size: self.size as u64,
-                comment: format!("Download progress: {progresss}%"),
+                comment: format!("Download progress: {progress}%"),
                 data: bytes,
             })
         } else {
@@ -606,9 +606,9 @@ struct Config {
     socket: String,
 }
 
-/// Load the config file and parse it into a convient data structure
+/// Load the config file and parse it into a convenient data structure
 ///
-/// Panics if the config file couln't be loaded or parsed
+/// Panics if the config file couldn't be loaded or parsed
 ///
 fn config_load() -> Config {
     let conf = std::fs::read("mcsc_server.toml").expect("Unable to load config file");

@@ -1,4 +1,4 @@
-socket = "[::1]:50051"
-minecraft_directory = "minecraft"
-backup_directory = "backups"
-key = "Who was in paris?....."
+socket = "[::1]:50051" # Scoket to serve on
+minecraft_directory = "minecraft" # Directory of minecraft server, this will become the new working directory
+backup_directory = "backups" # Folder to store backups in, relative to minecraft_directory
+key = "Who was in paris?....." # Secret for authentifiaction
