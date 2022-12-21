@@ -174,7 +174,7 @@ impl Controller for ControllerService {
         };
 
         // Create iterator that yeilds wolrddownloads
-        let wdl = match WDLIter::new(file){
+        let wdl = match WDLIter::new(file) {
             Some(dl) => dl,
             None => return Err(Status::aborted("Unable to fetch file metadata")),
         };
@@ -411,7 +411,7 @@ enum BackupError {
 }
 
 #[derive(Debug)]
- enum CommandError {
+enum CommandError {
     Idle,
     Downloading,
     ProccesError,
@@ -537,12 +537,13 @@ struct WDLIter {
 }
 
 impl WDLIter {
-    fn new(file: File) -> Option<Self >{
+    fn new(file: File) -> Option<Self> {
         Some(Self {
-            size: match file.metadata(){
+            size: match file.metadata() {
                 Ok(data) => data,
                 Err(_) => return None,
-            }.len() as usize,
+            }
+            .len() as usize,
             file_reader: BufReader::with_capacity(1024 * 1024, file),
             read: 0,
             error: false,
@@ -588,7 +589,6 @@ impl Iterator for WDLIter {
     }
 }
 
-
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Config
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -614,4 +614,3 @@ fn config_load() -> Config {
     let conf = std::fs::read("mcsc_server.toml").expect("Unable to load config file");
     toml::from_slice(&conf).expect("Unable to parse config, (syntax error)")
 }
-
