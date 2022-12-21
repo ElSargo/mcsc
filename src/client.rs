@@ -4,29 +4,30 @@ pub mod actions {
 }
 
 use actions::{
-    controller_client::ControllerClient, AuthRequest, DownloadRequest, OpResponce, OpResult,
-    StartRequest, StopRequest, AuthAction, BackupRequest, CommandRequest
+    controller_client::ControllerClient, AuthAction, AuthRequest, BackupRequest, CommandRequest,
+    DownloadRequest, OpResponce, OpResult, StartRequest, StopRequest,
 };
 use common::ran_letters;
+use magic_crypt::{new_magic_crypt, MagicCryptTrait};
+use serde_derive::Deserialize;
 use std::{fs, io::Write, thread::sleep, time::Duration};
 use tonic::Response;
-use serde_derive::Deserialize;
-use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = read_config();
-    println!("Config: {:?}", config);
 
     print!(
         "
+Welcome to mcsc, NOTE: these opperations take time to complete so be patent
 Enter a command: either by name or the number next to it
 0|\"Start\" to request a startup or 
 1|\"Stop\" to request a shutdown or 
 2|\"Backup\" to create a backup or 
 3|\"Command\" to run a command
 4|\"Download\" to download the latest backup
-=>");
+=> "
+    );
 
     let mut input = String::new();
     let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -37,9 +38,9 @@ Enter a command: either by name or the number next to it
     let responce: Response<OpResponce>;
 
     match input.as_str() {
-
         // Starts the server, does not wait for it to be ready or for a launch fail
         "0\n" | "Start\n" => {
+            println!("[Awaing serveer responce...]");
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
@@ -55,6 +56,7 @@ Enter a command: either by name or the number next to it
 
         // Stops the server by sending the stop command to stdin
         "1\n" | "Stop\n" => {
+            println!("[Awaing serveer responce...]");
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
@@ -70,6 +72,7 @@ Enter a command: either by name or the number next to it
 
         // Signals the server to backup the world to a compressed archive
         "2\n" | "Backup\n" => {
+            println!("[Awaing serveer responce...]");
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
@@ -92,6 +95,7 @@ Enter a command: either by name or the number next to it
                 println!("Error reading input");
                 return Ok(());
             }
+            println!("[Awaing serveer responce...]");
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
                 .auth(AuthRequest {
@@ -108,8 +112,9 @@ Enter a command: either by name or the number next to it
             responce = client.command(request).await?;
         }
 
-        // Downloads the latest backup from the server    
+        // Downloads the latest backup from the server
         "4\n" | "Download\n" => {
+            println!("[Awaing serveer responce...]");
             // Generate file name
             let path = format!("worldbackup-[{}].tar.gz", ran_letters(32));
 

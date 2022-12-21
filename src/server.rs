@@ -346,7 +346,7 @@ impl ServerState {
             Idle => {
                 let child = match Command::new("sh")
                     .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
+                    // .stdout(Stdio::piped())
                     .arg("launch.sh")
                     .spawn()
                 {
