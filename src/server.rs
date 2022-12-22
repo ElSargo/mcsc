@@ -447,11 +447,8 @@ fn encrypt(data: Vec<u8>) -> Vec<u8> {
 
 /// Generate some some random bytes for authentication
 fn gen_bytes(key_bytes: usize) -> Vec<u8> {
-    let mut rng = thread_rng();
-    let mut bytes: Vec<u8> = Vec::with_capacity(key_bytes);
-    for _ in 0..key_bytes {
-        bytes.push(rng.gen());
-    }
+    let mut bytes: Vec<u8> = vec![0;key_bytes];
+    thread_rng().fill_bytes(&mut bytes[..]);
     bytes
 }
 

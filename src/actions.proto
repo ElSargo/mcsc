@@ -1,7 +1,7 @@
 syntax = "proto3";
 package actions;
 
-service Controller{
+service Controller {
   rpc Start    ( StartRequest    ) returns ( OpResponce    );
   rpc Stop     ( StopRequest     ) returns ( OpResponce    );
   rpc Command  ( CommandRequest  ) returns ( OpResponce    );
