@@ -14,3 +14,5 @@ Clone the repo and install with cargo: \
 git clone https://github.com/ElSargo/mcsc \
 cd mcsc \
 cargo install --path ./ 
+
+The server and client need to read their respective config files so make sure to run them in the same directory and to set them up properly
