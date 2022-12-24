@@ -15,8 +15,8 @@ use antidote::RwLock;
 use futures::Stream;
 use magic_crypt::{new_magic_crypt, MagicCrypt256, MagicCryptTrait};
 use rand::prelude::*;
+use rolling_set::RollingSet;
 use std::{
-    collections::HashSet,
     fs::File,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
@@ -431,7 +431,7 @@ lazy_static! {
     static ref CRYPT: MagicCrypt256 = new_magic_crypt!(CONFIG.key.clone(), 256);
     static ref SOCKET: String = CONFIG.socket.clone();
     static ref KEY: String = CONFIG.key.clone();
-    static ref KEYS: RwLock<HashSet<Key>> = RwLock::new(HashSet::new());
+    static ref KEYS: RwLock<RollingSet<Key>> = RwLock::new(RollingSet::new(2048));
 }
 const KEY_BYTES: usize = 256;
 
@@ -455,10 +455,6 @@ fn gen_bytes(key_bytes: usize) -> Vec<u8> {
 /// Create a new key to give to our client, and store it so it can be verified later
 fn authorize_key(action: AuthAction) -> Vec<u8> {
     let mut set = KEYS.write();
-    // Don't run out of mem
-    if set.len() > 2048{
-        set.clear();
-    }
     let bytes = gen_bytes(KEY_BYTES);
     set.insert(Key {
         key: bytes.clone(),
@@ -466,6 +462,7 @@ fn authorize_key(action: AuthAction) -> Vec<u8> {
     });
     bytes
 }
+
 /// Check that a key has been authored by us
 fn verify_key(key: Key) -> bool {
     let mut set = KEYS.write();

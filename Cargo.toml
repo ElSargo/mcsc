@@ -25,6 +25,7 @@ parking_lot = "*"
 antidote = "*"
 tokio-stream = "*"
 futures = { version = "*", default-features = false, features = ["alloc"] }
+rolling-set = "*"
 
 [build-dependencies]
 tonic-build = "*"
