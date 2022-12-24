@@ -1,4 +1,4 @@
-socket = "[::1]:50051" # Scoket to serve on
+socket = "0.0.0.0:7878" # Scoket to serve on
 minecraft_directory = "minecraft" # Directory of minecraft server, this will become the new working directory
 backup_directory = "backups" # Folder to store backups in, relative to minecraft_directory
 key = "Who was in paris?....." # Secret for authentifiaction

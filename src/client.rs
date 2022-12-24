@@ -39,7 +39,7 @@ Enter a command: either by name or the number next to it
 
     match input.as_str() {
         // Starts the server, does not wait for it to be ready or for a launch fail
-        "0\n" | "Start\n" => {
+        "0\n" | "Start\n" | "0\r\n" | "Start\r\n" => {
             println!("[Awaiting server response...]");
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
@@ -55,7 +55,7 @@ Enter a command: either by name or the number next to it
         }
 
         // Stops the server by sending the stop command to stdin
-        "1\n" | "Stop\n" => {
+        "1\n" | "Stop\n" | "1\r\n" | "Stop\r\n" => {
             println!("[Awaiting server response...]");
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
@@ -71,7 +71,7 @@ Enter a command: either by name or the number next to it
         }
 
         // Signals the server to backup the world to a compressed archive
-        "2\n" | "Backup\n" => {
+        "2\n" | "Backup\n" | "2\r\n" | "Backup\r\n" => {
             println!("[Awaiting server response...]");
             let mut client = ControllerClient::connect(config.ip).await?;
             let key = client
@@ -87,7 +87,7 @@ Enter a command: either by name or the number next to it
         }
 
         // Attempts to run a minecraft command
-        "3\n" | "Command\n" => {
+        "3\n" | "Command\n" | "3\r\n" | "Command\r\n" => {
             print!("Enter command \n=> ");
             let _ = std::io::Write::flush(&mut std::io::stdout());
             let mut command = String::new();
@@ -113,7 +113,7 @@ Enter a command: either by name or the number next to it
         }
 
         // Downloads the latest backup from the server
-        "4\n" | "Download\n" => {
+        "4\n" | "Download\n" | "4\r\n" | "Download\r\n" => {
             println!("[Awaiting server response...]");
             // Generate file name
             let path = format!("worldbackup-[{}].tar.gz", ran_letters(32));

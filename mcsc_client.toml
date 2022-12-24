@@ -1,2 +1,2 @@
-ip = "http://[::1]:50051" # Ip and socket for the server
+ip = "http://0.0.0.0:7878" # Ip and socket for the server
 key = "Who was in paris?....." # Secret for authentifiaction
