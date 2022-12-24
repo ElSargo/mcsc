@@ -174,7 +174,7 @@ impl Controller for ControllerService {
         };
 
         // Create iterator that yields WorldDownload
-        let wdl = match WDLIter::new(file) {
+        let wdl = match WorldDownloadIterator::new(file) {
             Some(dl) => dl,
             None => return Err(Status::aborted("Unable to fetch file metadata")),
         };
@@ -454,8 +454,11 @@ fn gen_bytes(key_bytes: usize) -> Vec<u8> {
 
 /// Create a new key to give to our client, and store it so it can be verified later
 fn authorize_key(action: AuthAction) -> Vec<u8> {
-    // Keys must be initialised before use
     let mut set = KEYS.write();
+    // Don't run out of mem
+    if set.len() > 2048{
+        set.clear();
+    }
     let bytes = gen_bytes(KEY_BYTES);
     set.insert(Key {
         key: bytes.clone(),
@@ -526,14 +529,14 @@ fn remove_oldest_backup(dir: &str) {
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Produces an iterator of WorldDownload for streaming to the client
-struct WDLIter {
+struct WorldDownloadIterator {
     file_reader: BufReader<File>,
     error: bool,
     read: usize,
     size: usize,
 }
 
-impl WDLIter {
+impl WorldDownloadIterator {
     fn new(file: File) -> Option<Self> {
         Some(Self {
             size: match file.metadata() {
@@ -551,7 +554,7 @@ impl WDLIter {
 // bruh
 type WDLStream = Pin<Box<dyn Stream<Item = Result<WorldDownload, Status>> + Send>>;
 
-impl Iterator for WDLIter {
+impl Iterator for WorldDownloadIterator {
     type Item = WorldDownload;
 
     fn next(&mut self) -> Option<Self::Item> {
