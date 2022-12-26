@@ -26,6 +26,7 @@ antidote = "*"
 tokio-stream = "*"
 futures = { version = "*", default-features = false, features = ["alloc"] }
 rolling-set = "*"
+regex = "*"
 
 [build-dependencies]
 tonic-build = "*"
