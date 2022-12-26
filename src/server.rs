@@ -9,7 +9,7 @@ mod actions {
 use actions::{
     controller_server::{Controller, ControllerServer},
     AuthAction, AuthRequest, AuthResponce, BackupRequest, CommandRequest, DownloadRequest,
-    OpResponce, OpResult, StartRequest, StopRequest, WorldDownload,
+    OpResponce, OpResult, LaunchRequest, StopRequest, WorldDownload,
 };
 use antidote::RwLock;
 use futures::Stream;
@@ -33,7 +33,7 @@ use ServerState::*;
 // Server setup
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// Create a server that will allow users to start, stop a minecraft server as well as download the world file
+/// Create a server that will allow users to launch, stop a minecraft server as well as download the world file
 // #[tokio::main]
 #[tokio::main(flavor = "current_thread")] // no need to use many threads as traffic will be very low
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -203,25 +203,25 @@ impl Controller for ControllerService {
         ))
     }
 
-    ///Handle startup request
-    async fn start(&self, req: Request<StartRequest>) -> Result<Response<OpResponce>, Status> {
+    /// Handle launch request
+    async fn launch(&self, req: Request<LaunchRequest>) -> Result<Response<OpResponce>, Status> {
         let key = req.into_inner().token;
         if !verify_key(Key {
             key,
-            action: AuthAction::Start,
+            action: AuthAction::Launch,
         }) {
             return respond(OpResult::Denied, "Invalid Token");
         }
 
         let mut state = STATE.write();
-        let res = state.start();
+        let res = state.launch();
         match res {
-            Ok(_) => respond(OpResult::Success, "Started successfully"),
-            Err(start_error) => match start_error {
-                StartError::Launch => respond(OpResult::Fail, "Failed to launch server"),
-                StartError::AlreadyRunning => respond(OpResult::Fail, "Server already running"),
-                StartError::Downloading => {
-                    respond(OpResult::Fail, "Download in progress! Can't start")
+            Ok(_) => respond(OpResult::Success, "Launched successfully"),
+            Err(launch_error) => match launch_error {
+                LaunchError::Launch => respond(OpResult::Fail, "Failed to launch server"),
+                LaunchError::AlreadyRunning => respond(OpResult::Fail, "Server already running"),
+                LaunchError::Downloading => {
+                    respond(OpResult::Fail, "Download in progress! Can't launch")
                 }
             },
         }
@@ -340,7 +340,7 @@ impl ServerState {
     }
 
     /// Spawn a new java procces and store it in MINECRAFT_SERVER_STATE
-    fn start(&mut self) -> Result<(), StartError> {
+    fn launch(&mut self) -> Result<(), LaunchError> {
         self.check_stop();
         match self {
             Idle => {
@@ -351,13 +351,13 @@ impl ServerState {
                     .spawn()
                 {
                     Ok(child) => child,
-                    Err(_c) => return Err(StartError::Launch),
+                    Err(_c) => return Err(LaunchError::Launch),
                 };
                 *self = Running { procces: child };
                 Ok(())
             }
-            BackingUp => Err(StartError::Downloading),
-            Running { procces: _ } => Err(StartError::AlreadyRunning),
+            BackingUp => Err(LaunchError::Downloading),
+            Running { procces: _ } => Err(LaunchError::AlreadyRunning),
         }
     }
 
@@ -397,7 +397,7 @@ enum StopError {
 }
 
 #[derive(Debug)]
-enum StartError {
+enum LaunchError {
     Launch,
     AlreadyRunning,
     Downloading,

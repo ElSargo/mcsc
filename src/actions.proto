@@ -2,7 +2,7 @@ syntax = "proto3";
 package actions;
 
 service Controller {
-  rpc Start    ( StartRequest    ) returns ( OpResponce    );
+  rpc Launch    ( LaunchRequest    ) returns ( OpResponce    );
   rpc Stop     ( StopRequest     ) returns ( OpResponce    );
   rpc Command  ( CommandRequest  ) returns ( OpResponce    );
   rpc Download ( DownloadRequest ) returns ( stream WorldDownload );
@@ -16,7 +16,7 @@ message AuthResponce{
   bytes key = 3;
 }
 
-message StartRequest {
+message LaunchRequest {
   bytes token = 1;
 }
 
@@ -58,7 +58,7 @@ message OpResponce{
 }
 
 enum AuthAction{
-  Start = 0;
+  Launch = 0;
   Stop = 1;
   Command = 2;
   Download = 3;

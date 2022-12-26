@@ -5,7 +5,7 @@ pub mod actions {
 
 use actions::{
     controller_client::ControllerClient, AuthAction, AuthRequest, BackupRequest, CommandRequest,
-    DownloadRequest, StartRequest, StopRequest,
+    DownloadRequest, LaunchRequest, StopRequest,
 };
 use common::ran_letters;
 use magic_crypt::{new_magic_crypt, MagicCryptTrait};
@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "
 Welcome to mcsc, NOTE: these operations take time to complete so be patent
 Enter a command: either by name or the number next to it
-0|\"Start\" to request a startup or 
+0|\"Launch\" to request a server launch or 
 1|\"Stop\" to request a shutdown or 
 2|\"Backup\" to create a backup or 
 3|\"Command\" to run a command
@@ -37,19 +37,22 @@ Enter a command: either by name or the number next to it
     let regex_match = |reg, str| Regex::new(reg).unwrap().is_match(str);
     let input = read_input();
     let mut client = ControllerClient::connect(config.ip.to_owned()).await?;
-
-    let response = if regex_match(r"((?i)Start(?-i)|0)", &input) {
-        let token = auth(&mut client, AuthAction::Start, &config).await?;
-        let request = StartRequest { token };
-        client.start(request).await?
+    // Launch the server
+    let response = if regex_match(r"((?i)Launch(?-i)|0)", &input) {
+        let token = auth(&mut client, AuthAction::Launch, &config).await?;
+        let request = LaunchRequest { token };
+        client.launch(request).await?
+    // Stop the server
     } else if regex_match(r"((?i)Stop(?-i)|1)", &input) {
         let token = auth(&mut client, AuthAction::Stop, &config).await?;
         let request = StopRequest { token };
         client.stop(request).await?
+    // Take backup
     } else if regex_match(r"((?i)Backup(?-i)|2)", &input) {
         let token = auth(&mut client, AuthAction::Backup, &config).await?;
         let request = BackupRequest { token };
         client.backup(request).await?
+    // Run Command
     } else if regex_match(r"((?i)Command(?-i)|3)", &input) {
         print!("Enter command \n=> ");
         let command = read_input();
@@ -59,6 +62,7 @@ Enter a command: either by name or the number next to it
             command: command.to_owned(),
         };
         client.command(request).await?
+    // Download latest backup
     } else if regex_match(r"((?i)Download(?-i)|4)", &input) {
         // Generate file name
         let uuid = ran_letters(32);
