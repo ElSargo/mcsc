@@ -26,6 +26,6 @@ tokio-stream = "*"
 futures = { version = "*", default-features = false, features = ["alloc"] }
 rolling-set = "*"
 lazy-regex = "*"
-async_once = "*"
+
 [build-dependencies]
 tonic-build = "*"
