@@ -21,12 +21,11 @@ serde = "*"
 toml = "*"
 serde_derive = "*"
 lazy_static = "*"
-parking_lot = "*"
 antidote = "*"
 tokio-stream = "*"
 futures = { version = "*", default-features = false, features = ["alloc"] }
 rolling-set = "*"
-regex = "*"
-
+lazy-regex = "*"
+async_once = "*"
 [build-dependencies]
 tonic-build = "*"

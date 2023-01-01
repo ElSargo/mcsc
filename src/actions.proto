@@ -2,7 +2,7 @@ syntax = "proto3";
 package actions;
 
 service Controller {
-  rpc Launch    ( LaunchRequest    ) returns ( OpResponce    );
+  rpc Launch   ( LaunchRequest   ) returns ( OpResponce    );
   rpc Stop     ( StopRequest     ) returns ( OpResponce    );
   rpc Command  ( CommandRequest  ) returns ( OpResponce    );
   rpc Download ( DownloadRequest ) returns ( stream WorldDownload );
