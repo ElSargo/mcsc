@@ -1,5 +1,12 @@
-#! /bin/bash
+#! /usr/bin/env bash
+
 # Build the project
+
+echo 'Installing toolchains'
+rustup toolchain add nightly
+rustup target add aarch64-unknown-linux-gnu
+rustup target add x86_64-unknown-linux-gnu
+rustup target add x86_64-pc-windows-gnu
 
 rm -r releases &> /dev/null
 mkdir releases

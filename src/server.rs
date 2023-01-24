@@ -9,7 +9,7 @@ mod actions {
 use actions::{
     controller_server::{Controller, ControllerServer},
     AuthAction, AuthRequest, AuthResponce, BackupRequest, CommandRequest, DownloadRequest,
-    OpResponce, OpResult, LaunchRequest, StopRequest, WorldDownload,
+    LaunchRequest, OpResponce, OpResult, StopRequest, WorldDownload,
 };
 use antidote::RwLock;
 use futures::Stream;
