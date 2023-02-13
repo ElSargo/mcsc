@@ -19,8 +19,7 @@ use crate::actions::OpResult;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
-        "Welcome to mcsc, NOTE: these operations take time to complete so be patent
-Enter a command: either by name or the number next to it"
+        "Welcome to mcsc, NOTE: these operations take time to complete so be patent Enter a command: either by name or the number next to it"
     );
 
     let config: Config = {
@@ -43,7 +42,6 @@ async fn procces_request(config: &Config) -> Result<(), Box<dyn std::error::Erro
 4 | \'Download\' to download the latest backup
 => "
     );
-    // let regex_match = |reg, str| Regex::new(reg).unwrap().is_match(str);
     let input = read_input();
     // Don't await the client as we won't need the connection if the input is invailid
     let connection = ControllerClient::connect(config.ip.to_owned());
@@ -143,8 +141,8 @@ async fn recive_world_download(
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Generate file name
-    let uuid = ran_letters(32);
-    let path = format!("worldbackup-[{uuid}].tar.gz",);
+    let ufid = ran_letters(32);
+    let path = format!("worldbackup-[{ufid}].tar.gz",);
     let token = auth(client, AuthAction::Download, &config).await?;
     let request = DownloadRequest { token };
     // Download file
