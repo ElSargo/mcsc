@@ -13,8 +13,12 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        cargoNix = pkgs.callPackage ./Cargo.nix {};
         rust = fenix.packages.${system}.complete.toolchain;
       in {
+        cli = cargoNix.workspaceMembers.mcsc-cli.build ;
+        server = cargoNix.workspaceMembers.mcsc-server.build ;
+        # cli = cargoNix.workspaceMembers.mcsc-cli.build ;
         nixpkgs.overlays = [ fenix.overlays.complete ];
         devShells.default = pkgs.mkShell {
           buildInputs = [
@@ -24,11 +28,11 @@
             pkgs.sccache
             pkgs.mold
             pkgs.clang
-            pkgs.fish
+            pkgs.crate2nix
           ];
-          shellHook = # bash
-            "[ $0 = 'bash' ] && exec fish";
         };
+
+        
       });
 }
 
