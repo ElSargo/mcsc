@@ -608,6 +608,7 @@ struct Config {
 /// Panics if the config file couldn't be loaded or parsed
 ///
 fn config_load() -> Config {
-    let conf = std::fs::read("mcsc_server.toml").expect("Unable to load config file");
-    toml::from_slice(&conf).expect("Unable to parse config, (syntax error)")
+    let bytes = std::fs::read("mcsc_server.toml").expect("Unable to load config file");
+    let config = std::str::from_utf8(&bytes).expect("Config file encoding error");
+    toml::from_str(&config).expect("Unable to parse config, (syntax error)")
 }
