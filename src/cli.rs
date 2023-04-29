@@ -23,8 +23,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let config: Config = {
-        let text = std::fs::read("mcsc_client.toml").expect("No config file!");
-        toml::from_slice(&text).expect("No config file!")
+        let bytes = std::fs::read("mcsc_client.toml").expect("No config file!");
+        let text = std::str::from_utf8(&bytes).expect("Config file encoding error");
+        toml::from_str(text).expect("No config file!")
     };
 
     loop {

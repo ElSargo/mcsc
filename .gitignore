@@ -1,4 +1,4 @@
 /target
 /minecraft
-Cargo.lock
 /releases
+.direnv

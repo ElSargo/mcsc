@@ -8,8 +8,12 @@ name = "mcsc-server"
 path = "src/server.rs"
 
 [[bin]]
-name = "mcsc-client"
-path = "src/client.rs"
+name = "mcsc-cli"
+path = "src/cli.rs"
+
+[[bin]]
+name = "mcsc-gui"
+path = "src/gui.rs"
 
 [dependencies]
 tonic = "*"

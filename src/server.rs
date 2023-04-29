@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::set_current_dir(&working_directory)
             .expect(format!("Unable to set working-dir to {:?}", working_directory).as_ref());
     }
-    //TODO change to real socket once on the actual server
+
     let socket = CONFIG.socket.parse()?;
     let server_loader = ControllerService::default();
     println!("Starting service");
