@@ -17,11 +17,11 @@
         pkgs = nixpkgs.legacyPackages.${system};
         rust = fenix.packages.${system}.complete.toolchain;
         naersk' = pkgs.callPackage naersk { };
-        pkgs_cross = import nixpkgs {
+        aarch_64_pkgsCross = import nixpkgs {
           inherit system;
           crossSystem = { config = "aarch64-unknown-linux-gnu"; };
         };
-        naersk_cross = pkgs_cross.callPackage naersk { };
+        aarch_64_naersk_cross = aarch_64_pkgsCross.callPackage naersk { };
       in {
         defaultPackage = naersk'.buildPackage {
           src = ./.;
@@ -29,10 +29,10 @@
           buildInputs = with pkgs; [ gcc cmake glibc stdenv.cc ];
         };
 
-        packages.aarch64-unknown-linux-gnu = naersk_cross.buildPackage {
+        packages.aarch64-unknown-linux-gnu = aarch_64_naersk_cross.buildPackage {
           src = ./.;
-          nativeBuildInputs = [ pkgs.protobuf pkgs_cross.gcc pkgs_cross.cmake pkgs_cross.glibc pkgs_cross.stdenv.cc ];
-          buildInputs = with pkgs_cross; [ gcc cmake glibc stdenv.cc ];
+          nativeBuildInputs = [ pkgs.protobuf aarch_64_pkgsCross.gcc aarch_64_pkgsCross.cmake aarch_64_pkgsCross.glibc aarch_64_pkgsCross.stdenv.cc ];
+          buildInputs = with aarch_64_pkgsCross; [ gcc cmake glibc stdenv.cc ];
         };
 
         nixpkgs.overlays = [ fenix.overlays.complete ];
