@@ -13,10 +13,31 @@ minecarft setup is left up-to the user.
 Any contributions wellcome.
 
 
-# Building the project:  
-make sure you have cargo and protobuf installed:   
-From the pakage manager (void/xpbs): sudo xbps-install cargo protobuf 
+# Building the project: 
+## Nix
+Nix can be [installed](https://nix.dev/tutorials/install-nix) on any machine
 
+Just build
+```fish
+nix build
+```
+
+Build and run
+```fish
+nix run
+
+```
+## Non nix enabled systems
+make sure you have cargo and protobuf installed:   
+From the package manager 
+- (void/xpbs): 
+```fish
+sudo xbps-install cargo protobuf 
+```
+- (debian/apt):
+```fish
+sudo apt install cargo protobuf
+``` 
 Clone the repo and install with cargo:   
 ```fish
 git clone https://github.com/ElSargo/mcsc   
