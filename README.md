@@ -45,3 +45,14 @@ cd mcsc
 cargo install --path ./ 
 ```
 The server and client need to read their respective config files so make sure to run them in the same directory and to set them up properly
+
+
+# Planned Features
+- [ ] permissions
+- [ ] java version manager  
+- [ ] minecraft version manager
+- [ ] mod retriver using modrinth
+- [ ] async api
+- [ ] gui
+- [ ] web ui
+  
