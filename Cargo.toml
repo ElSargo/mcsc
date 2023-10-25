@@ -15,9 +15,15 @@ path = "src/cli.rs"
 name = "mcsc-gui"
 path = "src/gui.rs"
 
+[[bin]]
+name = "server-test"
+path = "src/server-test.rs"
+
+[[bin]]
+name = "client-test"
+path = "src/client-test.rs"
+
 [dependencies]
-tonic = "*"
-prost = "*"
 tokio = { version = "*", features = ["full"] }
 magic-crypt = "*"
 rand = "*"
@@ -25,11 +31,7 @@ serde = "*"
 toml = "*"
 serde_derive = "*"
 lazy_static = "*"
-antidote = "*"
-tokio-stream = "*"
-futures = { version = "*", default-features = false, features = ["alloc"] }
 rolling-set = "*"
 lazy-regex = "*"
-
-[build-dependencies]
-tonic-build = "*"
+bincode = "*"
+color-eyre = "0.6.2"
