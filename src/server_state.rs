@@ -2,7 +2,8 @@ use crate::{backups::remove_oldest_backup, common, net::Token, Config};
 use color_eyre::{Report, Result};
 use rolling_set::RollingSet;
 use std::process::Stdio;
-use strum::EnumDiscriminants;
+use std::time::Duration;
+use strum::{EnumDiscriminants, EnumString};
 use tokio::io::AsyncWriteExt;
 use tokio::process::ChildStdin;
 use tokio::{
@@ -78,10 +79,15 @@ impl ServerState {
         let mut state = self.state.write().await;
         match &mut *state {
             Idle => {
-                let child = Command::new("sh")
+                let mut child = Command::new("sh")
                     .stdin(Stdio::piped())
                     .arg("launch.sh")
                     .spawn()?;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if let Ok(Some(e)) = child.try_wait() {
+                    // Process imediatly exited
+                    return Err(Report::msg(format!("{e}")));
+                }
                 *state = Running { procces: child };
                 Ok(())
             }

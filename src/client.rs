@@ -23,21 +23,6 @@ impl Client {
         })
     }
 
-    // async fn auth(
-    //     client: &mut ControllerClient<Channel>,
-    //     action: AuthAction,
-    //     config: &Config,
-    // ) -> Result<Vec<u8>, tonic::Status> {
-    //     println!("[Awaiting server response...]");
-    //     let key = client
-    //         .auth(AuthRequest {
-    //             action: action.into(),
-    //         })
-    //         .await?
-    //         .into_inner();
-    //     println!("[Server connection status: {}]", key.comment);
-    //     Ok(decrypt(&key.key, &config.key).expect("Client side auth error occurred"))
-    // }
     async fn auth(&self) -> Result<Token> {
         let mut stream = connect(&self.host).await?;
         let (read_half, write_half) = stream.split();
@@ -49,13 +34,14 @@ impl Client {
         }
     }
 
-    pub async fn send_request(&self, action: ActionRequest) -> Result<()> {
+    pub async fn send_request(&self, action: ActionRequest) -> Result<Responce> {
         let token = self.auth().await?;
         let mut stream = connect(&self.host).await?;
+        let (reader, writer) = stream.split();
         Request::Action(token, action)
-            .send(stream.split().1, &self.enctyptor)
+            .send(writer, &self.enctyptor)
             .await?;
-        Ok(())
+        Responce::recive(reader, &self.enctyptor).await
     }
 }
 

@@ -3,7 +3,7 @@ mod common;
 mod net;
 mod server_state;
 use color_eyre::Result;
-use magic_crypt::{new_magic_crypt, MagicCrypt256, MagicCryptTrait};
+use magic_crypt::{new_magic_crypt, MagicCrypt256};
 use net::{Request, Responce, Token};
 use rand::prelude::*;
 use rolling_set::RollingSet;
@@ -15,7 +15,6 @@ use std::{
     sync::Arc,
 };
 use tokio::{
-    io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
     sync::RwLock,
 };
@@ -63,7 +62,14 @@ async fn handle_connection(
     match request {
         Request::Ping => {
             println!("Responding to ping");
-            let server_state = server.get_state();
+            let server_state = server.get_state().await;
+            match server_state {
+                server_state::ServerStateNames::Idle => "Server idle",
+                server_state::ServerStateNames::Startup => "Server starting",
+                server_state::ServerStateNames::Running => "Server running",
+                server_state::ServerStateNames::ShutingDown => "Server shutting-down",
+                server_state::ServerStateNames::BackingUp => "Server backing up",
+            };
             Responce::Ping.send(write_half, encryptor).await?;
         }
         Request::Auth => {
@@ -75,14 +81,24 @@ async fn handle_connection(
         Request::Action(token, action) => {
             if verify_token(token, &server.tokens).await {
                 server.check_stop().await;
-                match action {
+                if let Err(e) = match action {
                     ActionRequest::Launch => server.launch().await,
                     ActionRequest::Stop => server.stop().await,
                     ActionRequest::Restart => server.restart().await,
                     ActionRequest::Backup => server.backup().await,
                     ActionRequest::Command(command) => server.run_command(&command).await,
                     ActionRequest::Download => todo!(),
-                }?;
+                } {
+                    Responce::Error(e.to_string())
+                        .send(write_half, encryptor)
+                        .await?;
+                } else {
+                    Responce::Success.send(write_half, encryptor).await?;
+                }
+            } else {
+                Responce::Error("Not verified".to_string())
+                    .send(write_half, encryptor)
+                    .await?;
             }
         }
     };
@@ -236,7 +252,7 @@ pub struct Config {
 fn config_load() -> Config {
     let bytes = std::fs::read("mcsc_server.toml").expect("Unable to load config file");
     let config = std::str::from_utf8(&bytes).expect("Config file encoding error");
-    toml::from_str(&config).expect("Unable to parse config, (syntax error)")
+    toml::from_str(config).expect("Unable to parse config, (syntax error)")
 }
 
 fn change_working_directory(path: impl AsRef<Path>) -> Result<()> {

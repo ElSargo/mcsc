@@ -51,9 +51,24 @@ async fn procces_request(client: &Client) -> Result<()> {
         // No action recognised
         return Err(Report::msg("Invalid input"));
     };
-    client.send_request(action).await?;
 
-    todo!();
+    let responce = client.send_request(action).await?;
+
+    match responce {
+        net::Responce::Success => {
+            println!("Success");
+        }
+        net::Responce::Ping => {
+            println!("Server pinged back...");
+        }
+        net::Responce::AuthToken(_) => {
+            println!("Server sent us a token...");
+        }
+        net::Responce::Error(e) => {
+            println!("{e}");
+        }
+    }
+
     Ok(())
 }
 

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use color_eyre::Result;
 use magic_crypt::{MagicCrypt256, MagicCryptTrait};
 use serde_derive::{Deserialize, Serialize};
@@ -32,6 +33,7 @@ pub enum Responce {
     Ping,
     AuthToken(Vec<u8>),
     Error(String),
+    Success,
 }
 
 impl Request {
