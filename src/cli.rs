@@ -1,20 +1,14 @@
 mod common;
-pub mod actions {
-    tonic::include_proto!("actions");
-}
-
-use actions::{
-    controller_client::ControllerClient, AuthAction, AuthRequest, BackupRequest, CommandRequest,
-    DownloadRequest, LaunchRequest, StopRequest,
-};
+mod net;
+use crate::net::{Request, Responce};
+use color_eyre::{Report, Result};
 use common::ran_letters;
 use lazy_regex::regex_is_match;
 use magic_crypt::{new_magic_crypt, MagicCryptTrait};
+use net::Token;
 use serde_derive::Deserialize;
 use std::{fs, io::Write};
-use tonic::transport::Channel;
-
-use crate::actions::OpResult;
+use tokio::net::TcpSocket;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,70 +27,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn procces_request(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+async fn procces_request(config: &Config) -> Result<()> {
     print!(
         "
-0 | \'Launch\'   to request a server launch or 
-1 | \'Stop\'     to request a shutdown or 
-2 | \'Backup\'   to create a backup or 
+0 | \'Launch\'   to request a server launch or
+1 | \'Stop\'     to request a shutdown or
+2 | \'Backup\'   to create a backup or
 3 | \'Command\'  to run a command
 4 | \'Download\' to download the latest backup
 => "
     );
     let input = read_input();
-    // Don't await the client as we won't need the connection if the input is invailid
-    let connection = ControllerClient::connect(config.ip.to_owned());
 
-    // Launch the server
-    let response = if regex_is_match!(r"((?i)Launch(?-i)|0)", &input) {
-        let mut client = connection.await?;
-        let token = auth(&mut client, AuthAction::Launch, &config).await?;
-        client.launch(LaunchRequest { token }).await?
+    // Get a socekt
+    let addy = config.ip.parse()?;
+    let socket = TcpSocket::new_v4()?;
 
-    // Stop the server
+    let mut stream = socket.connect(addy).await?;
+    let (read_half, write_half) = stream.split();
+
+    // Don't imedialty await the token as we may not need it
+    let token = auth(config);
+
+    if regex_is_match!(r"((?i)Launch(?-i)|0)", &input) {
+        // Launch the server
+        Request::Launch(token.await).send(write_half).await?;
     } else if regex_is_match!(r"((?i)Stop(?-i)|1)", &input) {
-        let mut client = connection.await?;
-        let token = auth(&mut client, AuthAction::Stop, &config).await?;
-        client.stop(StopRequest { token }).await?
-
-    // Take backup
+        // Stop the server
+        Request::Stop(token.await).send(write_half).await?;
     } else if regex_is_match!(r"((?i)Backup(?-i)|2)", &input) {
-        let mut client = connection.await?;
-        let token = auth(&mut client, AuthAction::Backup, &config).await?;
-        client.backup(BackupRequest { token }).await?
-
-    // Run Command
+        // Take backup
+        Request::Backup(token.await).send(write_half).await?;
     } else if regex_is_match!(r"((?i)Command(?-i)|3)", &input) {
-        let mut client = connection.await?;
+        // Run Command
         print!("Enter command \n=> ");
         let command = read_input();
-        let token = auth(&mut client, AuthAction::Command, &config).await?;
-        let request = CommandRequest {
-            token,
-            command: command.to_owned(),
-        };
-        client.command(request).await?
-
-    // Download latest backup
+        Request::Command(token.await, command)
+            .send(write_half)
+            .await?;
     } else if regex_is_match!(r"((?i)Download(?-i)|4)", &input) {
-        let mut client = ControllerClient::connect(config.ip.to_owned()).await?;
-        recive_world_download(&mut client, &config).await?;
-        return Ok(());
-    }
-    // No action recognised
-    else {
-        println!("Invalid input");
-        return Err(Box::new(std::io::Error::from_raw_os_error(22)));
+        // Download latest backup
+        Request::Download(token.await).send(write_half).await?;
+    } else {
+        // No action recognised
+        return Err(Report::msg("Invalid input"));
     };
 
-    let success = response.into_inner();
-    let status_msg = match success.result {
-        0 => "Success!",
-        1 => "Failed!",
-        2 => "Denied!",
-        _ => "Something fucked up!",
-    };
-    println!("{status_msg}, server comment: {}", success.comment);
+    match Responce::recive(read_half).await? {
+        Responce::Ping => println!("Pinged back!"),
+        Responce::Error(e) => println!("Error: {e}"),
+    }
 
     Ok(())
 }
@@ -112,21 +92,24 @@ fn decrypt(data: &Vec<u8>, key: &str) -> Result<Vec<u8>, magic_crypt::MagicCrypt
     Ok(key.decrypt_bytes_to_bytes(data)?)
 }
 
-async fn auth(
-    client: &mut ControllerClient<Channel>,
-    action: AuthAction,
-    config: &Config,
-) -> Result<Vec<u8>, tonic::Status> {
-    println!("[Awaiting server response...]");
-    let key = client
-        .auth(AuthRequest {
-            action: action.into(),
-        })
-        .await?
-        .into_inner();
-    println!("[Server connection status: {}]", key.comment);
-    Ok(decrypt(&key.key, &config.key).expect("Client side auth error occurred"))
+async fn auth(config: &Config) -> Token {
+    todo!()
 }
+// async fn auth(
+//     client: &mut ControllerClient<Channel>,
+//     action: AuthAction,
+//     config: &Config,
+// ) -> Result<Vec<u8>, tonic::Status> {
+//     println!("[Awaiting server response...]");
+//     let key = client
+//         .auth(AuthRequest {
+//             action: action.into(),
+//         })
+//         .await?
+//         .into_inner();
+//     println!("[Server connection status: {}]", key.comment);
+//     Ok(decrypt(&key.key, &config.key).expect("Client side auth error occurred"))
+// }
 
 fn read_input() -> String {
     let mut input = String::new();
@@ -137,37 +120,36 @@ fn read_input() -> String {
     input
 }
 
-async fn recive_world_download(
-    client: &mut ControllerClient<Channel>,
-    config: &Config,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Generate file name
-    let ufid = ran_letters(32);
-    let path = format!("worldbackup-[{ufid}].tar.gz",);
-    let token = auth(client, AuthAction::Download, &config).await?;
-    let request = DownloadRequest { token };
-    // Download file
-    let mut stream = client.download(request).await?.into_inner();
-    let mut file = fs::File::create(&path)?;
-    while let Some(msg) = stream.message().await? {
-        println!("{}", msg.comment);
+// async fn recive_world_download(
+//     client: &mut ControllerClient<Channel>,
+//     config: &Config,
+// ) -> Result<(), Box<dyn std::error::Error>> {
+//     // Generate file name
+//     let ufid = ran_letters(32);
+//     let path = format!("worldbackup-[{ufid}].tar.gz",);
+//     let token = auth(client, AuthAction::Download, &config).await?;
+//     let request = DownloadRequest { token };
+//     // Download file
+//     let mut stream = client.download(request).await?.into_inner();
+//     let mut file = fs::File::create(&path)?;
+//     while let Some(msg) = stream.message().await? {
+//         println!("{}", msg.comment);
 
-        // Check for errors
-        if let Some(res) = OpResult::from_i32(msg.result) {
-            if res != OpResult::Success {
-                // Throw away redundant file to avoid confusion
-                let _ = std::fs::remove_file(path);
-                return Ok(());
-            }
-        }
+//         if let Some(res) = OpResult::from_i32(msg.result) {
+//             if res != OpResult::Success {
+//                 // Throw away redundant file to avoid confusion
+//                 let _ = std::fs::remove_file(path);
+//                 return Ok(());
+//             }
+//         }
 
-        file.write(&msg.data)?;
-    }
-    // Download complete, show location
-    let working_directory = std::env::current_dir();
-    match working_directory {
-        Ok(wdir) => println!("Saved as {:?} {}", wdir, path),
-        Err(_) => println!("Download saved as {}", path),
-    }
-    return Ok(());
-}
+//         file.write(&msg.data)?;
+//     }
+//     // Download complete, show location
+//     let working_directory = std::env::current_dir();
+//     match working_directory {
+//         Ok(wdir) => println!("Saved as {:?} {}", wdir, path),
+//         Err(_) => println!("Download saved as {}", path),
+//     }
+//     return Ok(());
+// }
