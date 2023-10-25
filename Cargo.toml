@@ -21,6 +21,7 @@ path = "src/server-test.rs"
 
 [dependencies]
 tokio = { version = "*", features = ["full"] }
+tokio-stream = {version = "*", features = ["full"]}
 magic-crypt = "*"
 rand = "*"
 serde = "*"
@@ -31,3 +32,4 @@ rolling-set = "*"
 lazy-regex = "*"
 bincode = "*"
 color-eyre = "0.6.2"
+strum = {version = "*", features = ["derive"]}

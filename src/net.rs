@@ -1,4 +1,5 @@
 use color_eyre::Result;
+use magic_crypt::{MagicCrypt256, MagicCryptTrait};
 use serde_derive::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader},
@@ -11,18 +12,25 @@ pub type Token = Vec<u8>;
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Request {
     Ping,
-    Launch(Token),
-    Stop(Token),
-    Restart(Token),
-    Backup(Token),
-    Command(Token, String),
-    Download(Token),
+    Auth,
+    Action(Token, ActionRequest),
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum ActionRequest {
+    Launch,
+    Stop,
+    Restart,
+    Backup,
+    Command(String),
+    Download,
 }
 
 // Sent from server to client
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Responce {
     Ping,
+    AuthToken(Vec<u8>),
     Error(String),
 }
 
@@ -35,14 +43,14 @@ impl Request {
         Ok(bincode::deserialize(bytes)?)
     }
 
-    pub async fn recive(read_stream: ReadHalf<'_>) -> Result<Self> {
-        let data = recive_bytes(read_stream).await?;
+    pub async fn recive(read_stream: ReadHalf<'_>, encryptor: &MagicCrypt256) -> Result<Self> {
+        let data = recive_bytes(read_stream, encryptor).await?;
         Self::from_bytes(&data)
     }
 
-    pub async fn send(self, write_stream: WriteHalf<'_>) -> Result<()> {
+    pub async fn send(self, write_stream: WriteHalf<'_>, encryptor: &MagicCrypt256) -> Result<()> {
         let bytes = self.into_bytes()?;
-        send_bytes(&bytes, write_stream).await
+        send_bytes(&bytes, write_stream, encryptor).await
     }
 }
 
@@ -55,26 +63,33 @@ impl Responce {
         Ok(bincode::deserialize(bytes)?)
     }
 
-    pub async fn recive(read_stream: ReadHalf<'_>) -> Result<Self> {
-        let data = recive_bytes(read_stream).await?;
+    pub async fn recive(read_stream: ReadHalf<'_>, encryptor: &MagicCrypt256) -> Result<Self> {
+        let data = recive_bytes(read_stream, encryptor).await?;
         Self::from_bytes(&data)
     }
 
-    pub async fn send(self, write_stream: WriteHalf<'_>) -> Result<()> {
+    pub async fn send(self, write_stream: WriteHalf<'_>, encryptor: &MagicCrypt256) -> Result<()> {
         let bytes = self.into_bytes()?;
-        send_bytes(&bytes, write_stream).await
+        send_bytes(&bytes, write_stream, encryptor).await
     }
 }
 
-async fn recive_bytes(stream: ReadHalf<'_>) -> Result<Vec<u8>, color_eyre::Report> {
+async fn recive_bytes(
+    stream: ReadHalf<'_>,
+    encryptor: &MagicCrypt256,
+) -> Result<Vec<u8>, color_eyre::Report> {
     let mut reader = BufReader::new(stream);
     let mut data = vec![];
     reader.read_to_end(&mut data).await?;
-    Ok(data)
+    Ok(encryptor.decrypt_bytes_to_bytes(&data)?)
 }
 
-async fn send_bytes(bytes: &[u8], mut wire: WriteHalf<'_>) -> Result<()> {
-    wire.write_all(bytes).await?;
+async fn send_bytes(
+    bytes: &[u8],
+    mut wire: WriteHalf<'_>,
+    encryptor: &MagicCrypt256,
+) -> Result<()> {
+    wire.write_all(&encryptor.encrypt_to_bytes(bytes)).await?;
     wire.flush().await?;
     wire.shutdown().await?;
     Ok(())
