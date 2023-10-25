@@ -1,5 +1,5 @@
 {
-  description = "Dev shell the project";
+  description = "A controler for mincraft servers.";
 
   inputs = {
     naersk.url = "github:nix-community/naersk";
@@ -30,7 +30,7 @@
 
         packages.aarch64-unknown-linux-gnu = aarch_64_naersk_cross.buildPackage {
           src = ./.;
-          nativeBuildInputs = [ aarch_64_pkgsCross.gcc aarch_64_pkgsCross.cmake aarch_64_pkgsCross.glibc aarch_64_pkgsCross.stdenv.cc ];
+          nativeBuildInputs = with aarch_64_pkgsCross; [ gcc cmake glibc stdenv.cc ];
           buildInputs = with aarch_64_pkgsCross; [ gcc cmake glibc stdenv.cc ];
         };
 
