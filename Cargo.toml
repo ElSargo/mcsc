@@ -15,10 +15,6 @@ path = "src/cli.rs"
 name = "mcsc-gui"
 path = "src/gui.rs"
 
-[[bin]]
-name = "server-test"
-path = "src/server-test.rs"
-
 [dependencies]
 tokio = { version = "*", features = ["full"] }
 tokio-stream = {version = "*", features = ["full"]}
