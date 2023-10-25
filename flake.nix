@@ -25,13 +25,12 @@
       in {
         defaultPackage = naersk'.buildPackage {
           src = ./.;
-          nativeBuildInputs = with pkgs; [ protobuf ];
           buildInputs = with pkgs; [ gcc cmake glibc stdenv.cc ];
         };
 
         packages.aarch64-unknown-linux-gnu = aarch_64_naersk_cross.buildPackage {
           src = ./.;
-          nativeBuildInputs = [ pkgs.protobuf aarch_64_pkgsCross.gcc aarch_64_pkgsCross.cmake aarch_64_pkgsCross.glibc aarch_64_pkgsCross.stdenv.cc ];
+          nativeBuildInputs = [ aarch_64_pkgsCross.gcc aarch_64_pkgsCross.cmake aarch_64_pkgsCross.glibc aarch_64_pkgsCross.stdenv.cc ];
           buildInputs = with aarch_64_pkgsCross; [ gcc cmake glibc stdenv.cc ];
         };
 
@@ -39,7 +38,6 @@
 
         devShells.default = pkgs.mkShell {
           buildInputs = [
-            pkgs.protobuf
             rust
             pkgs.lldb_9
             pkgs.sccache

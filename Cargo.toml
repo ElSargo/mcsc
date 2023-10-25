@@ -19,10 +19,6 @@ path = "src/gui.rs"
 name = "server-test"
 path = "src/server-test.rs"
 
-[[bin]]
-name = "client-test"
-path = "src/client-test.rs"
-
 [dependencies]
 tokio = { version = "*", features = ["full"] }
 magic-crypt = "*"
