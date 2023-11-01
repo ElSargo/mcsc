@@ -38,6 +38,8 @@
 
         devShells.default = pkgs.mkShell {
           buildInputs = [
+            pkgs.pkg-config
+            pkgs.openssl
             rust
             pkgs.lldb_9
             pkgs.sccache

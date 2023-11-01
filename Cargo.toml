@@ -18,7 +18,7 @@ path = "src/gui.rs"
 [dependencies]
 tokio = { version = "*", features = ["full"] }
 tokio-stream = {version = "*", features = ["full"]}
-magic-crypt = "*"
+cryptostream = "*"
 rand = "*"
 serde = "*"
 toml = "*"
