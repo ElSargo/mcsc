@@ -1,2 +1,2 @@
-ip = "http://0.0.0.0:7878" # Ip and socket for the server
-key = "Who was in paris?....." # Secret for authentifiaction
+ip = "http://127.0.0.1:7878" # Server URL.
+key = "change-this-to-the-same-long-random-secret-as-the-server" # Shared secret for request signing.

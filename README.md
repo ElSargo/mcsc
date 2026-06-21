@@ -1,58 +1,86 @@
-# MCSC 
-Controller for minecraft servers written in rust, it
-allows for starting, stopping, taking backups, downloading 
-backups and running remote commands _without_ ssh(ing) into the server.
-This should make it safe for you to allow
-freinds ect to control the server without compromizing it's security as the
-software can only perform a limmited  number of safe actions.
-It is set
-up with saftey in mind and will only allow one action to be run at a time to
-avoid any pottential data corruption issues.  
-This is **not** an installer and all
-minecarft setup is left up-to the user.  
-Any contributions wellcome.
+# MCSC
 
+MCSC is a small Rust controller for Minecraft servers. It exposes a constrained
+gRPC API for launching, stopping, backing up, downloading backups, and sending
+allowlisted console commands without giving users SSH access to the host.
 
-# Building the project: 
-## Nix
-Nix can be [installed](https://nix.dev/tutorials/install-nix) on any machine
+It is not a Minecraft installer. Set up the Minecraft server yourself, then
+point MCSC at that server directory.
 
-Just build
-```fish
-nix build
+## Binaries
+
+- `mcsc-server` runs the gRPC control service.
+- `mcsc-cli` provides an interactive terminal client.
+- `mcsc-gui` provides an iced desktop client.
+
+## Security Model
+
+Clients and the server share a long random secret in their config files. Each
+request is signed with HMAC-SHA256 over the operation, request body, and a fresh
+nonce. The server rejects invalid signatures and replayed nonces.
+
+The command endpoint is additionally restricted by `allowed_commands` in
+`mcsc_server.toml`. Only the first word of the console command is checked, so
+keep the list narrow.
+
+Use the default loopback socket for local use. If you bind `mcsc-server` to
+`0.0.0.0`, put it behind a firewall, VPN, or similar network control.
+
+## Configuration
+
+Create matching secrets in both config files before running anything:
+
+```toml
+# mcsc_server.toml
+socket = "127.0.0.1:7878"
+minecraft_directory = "minecraft"
+backup_directory = "backups"
+key = "replace-with-a-long-random-secret-at-least-32-characters"
+launch_command = ["sh", "launch.sh"]
+allowed_commands = ["list", "say", "save-all", "whitelist"]
+max_backups = 10
 ```
 
-Build and run
-```fish
-nix run
-
+```toml
+# mcsc_client.toml
+ip = "http://127.0.0.1:7878"
+key = "replace-with-the-same-long-random-secret"
 ```
-## Non nix enabled systems
-make sure you have cargo and protobuf installed:   
-From the package manager 
-- (void/xpbs): 
-```fish
-sudo xbps-install cargo protobuf 
-```
-- (debian/apt):
-```fish
-sudo apt install cargo protobuf
-``` 
-Clone the repo and install with cargo:   
-```fish
-git clone https://github.com/ElSargo/mcsc   
-cd mcsc   
-cargo install --path ./ 
-```
-The server and client need to read their respective config files so make sure to run them in the same directory and to set them up properly
 
+`minecraft_directory` becomes the server process working directory. Backups are
+stored in `backup_directory` relative to that directory.
 
-# Planned Features
-- [ ] permissions
-- [ ] java version manager  
-- [ ] minecraft version manager
-- [ ] mod retriver using modrinth
-- [ ] async api
-- [ ] gui
-- [ ] web ui
-  
+## Building
+
+MCSC vendors `protoc` for gRPC code generation, so a normal Rust toolchain is
+enough:
+
+```sh
+cargo build
+```
+
+Run the server:
+
+```sh
+cargo run --bin mcsc-server
+```
+
+Run the CLI:
+
+```sh
+cargo run --bin mcsc-cli
+```
+
+Run the GUI:
+
+```sh
+cargo run --bin mcsc-gui
+```
+
+## Planned Features
+
+- Permissions per user or key.
+- Java version manager.
+- Minecraft version manager.
+- Mod downloader using Modrinth.
+- Web UI.

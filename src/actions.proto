@@ -2,40 +2,39 @@ syntax = "proto3";
 package actions;
 
 service Controller {
-  rpc Launch   ( LaunchRequest   ) returns ( OpResponce    );
-  rpc Stop     ( StopRequest     ) returns ( OpResponce    );
-  rpc Command  ( CommandRequest  ) returns ( OpResponce    );
+  rpc Launch   ( LaunchRequest   ) returns ( OpResponse    );
+  rpc Stop     ( StopRequest     ) returns ( OpResponse    );
+  rpc Command  ( CommandRequest  ) returns ( OpResponse    );
   rpc Download ( DownloadRequest ) returns ( stream WorldDownload );
-  rpc Backup   ( BackupRequest   ) returns ( OpResponce    );
-  rpc Auth     ( AuthRequest     ) returns ( AuthResponce  );
+  rpc Backup   ( BackupRequest   ) returns ( OpResponse    );
 }
 
-message AuthResponce{
-  OpResult result = 1;
-  string comment = 2;
-  bytes key = 3;
+message AuthToken {
+  bytes nonce = 1;
+  bytes signature = 2;
+  uint64 issued_at_unix_ms = 3;
 }
 
 message LaunchRequest {
-  bytes token = 1;
+  AuthToken auth = 1;
 }
 
 message StopRequest {
-  bytes token = 1;
+  AuthToken auth = 1;
 }
 
 message DownloadRequest{
-  bytes token = 1;
+  AuthToken auth = 1;
 }
 
 
 message BackupRequest {
-  bytes token = 1;
+  AuthToken auth = 1;
 }
 
 message CommandRequest{
   string command = 1;
-  bytes token = 2;
+  AuthToken auth = 2;
 }
  
 enum OpResult{
@@ -52,7 +51,7 @@ message WorldDownload{
 }
 
 
-message OpResponce{
+message OpResponse{
   OpResult result = 1;
   string comment = 2;
 }
@@ -63,9 +62,4 @@ enum AuthAction{
   Command = 2;
   Download = 3;
   Backup = 4;
-}
-
-
-message AuthRequest{
-  AuthAction action = 1;
 }

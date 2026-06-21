@@ -1,72 +1,58 @@
-#[macro_use]
-extern crate lazy_static;
-
-mod common;
-mod actions {
-    tonic::include_proto!("actions");
-}
-
-use actions::{
+use mcsc::actions::{
     controller_server::{Controller, ControllerServer},
-    AuthAction, AuthRequest, AuthResponce, BackupRequest, CommandRequest, DownloadRequest,
-    LaunchRequest, OpResponce, OpResult, StopRequest, WorldDownload,
+    AuthAction, AuthToken, BackupRequest, CommandRequest, DownloadRequest, LaunchRequest,
+    OpResponse, OpResult, StopRequest, WorldDownload,
 };
-use antidote::RwLock;
-use futures::Stream;
-use magic_crypt::{new_magic_crypt, MagicCrypt256, MagicCryptTrait};
-use rand::prelude::*;
-use rolling_set::RollingSet;
-use std::{
-    fs::File,
-    io::{BufRead, BufReader, Write},
-    path::PathBuf,
-    pin::Pin,
-    process::{Child, Command, Stdio},
-    time::SystemTime,
-};
+use mcsc::common;
+use serde::Deserialize;
+use std::collections::{HashSet, VecDeque};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::process::{Child, Command, Stdio};
+use std::sync::{LazyLock, Mutex};
+use std::time::SystemTime;
 use tokio::sync::mpsc;
-use tokio_stream::{wrappers::ReceiverStream, StreamExt};
+use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tonic::{transport::Server, Request, Response, Status};
-use ServerState::*;
 
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Server setup
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+const MAX_SEEN_NONCES: usize = 4096;
 
-/// Create a server that will allow users to launch, stop a minecraft server as well as download the world file
-// #[tokio::main]
-#[tokio::main(flavor = "current_thread")] // no need to use many threads as traffic will be very low
+static CONFIG: LazyLock<Config> = LazyLock::new(|| {
+    let config = Config::load().expect("unable to load mcsc_server.toml");
+    config.validate().expect("invalid mcsc_server.toml");
+    config
+});
+static STATE: LazyLock<Mutex<ServerState>> = LazyLock::new(|| Mutex::new(ServerState::Idle));
+static SEEN_NONCES: LazyLock<Mutex<NonceCache>> =
+    LazyLock::new(|| Mutex::new(NonceCache::new(MAX_SEEN_NONCES)));
+
+#[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    {
-        // Change working dir that of .minecraft
-        // This is required for java to load the minecraft sever properly
-        let current_working_directory =
-            std::env::current_dir().expect("Couldn't load current working directory");
-        let minecraft_directory = std::path::Path::new(&CONFIG.minecraft_directory);
-        let mut working_directory = current_working_directory.to_path_buf();
-        working_directory.push(minecraft_directory);
-        std::env::set_current_dir(&working_directory)
-            .expect(format!("Unable to set working-dir to {:?}", working_directory).as_ref());
-    }
+    let current_working_directory = std::env::current_dir()?;
+    let working_directory = current_working_directory.join(&CONFIG.minecraft_directory);
+    std::env::set_current_dir(&working_directory)?;
+    std::fs::create_dir_all(&CONFIG.backup_directory)?;
 
     let socket = CONFIG.socket.parse()?;
-    let server_loader = ControllerService::default();
-    println!("Starting service");
+    let service = ControllerService::default();
+
+    println!("Starting mcsc service on {socket}");
     Server::builder()
-        .add_service(ControllerServer::new(server_loader))
+        .add_service(ControllerServer::new(service))
         .serve(socket)
         .await?;
+
     Ok(())
 }
 
-/// Used to set up our server, we will impl all methods outlined in proto/actions.proto on this struct
 #[derive(Debug, Default)]
 struct ControllerService {}
 
-/// Shorthand for Ok(Responce::new(OpResponce{result: code, comment: comment}))
-fn respond(code: OpResult, comment: &str) -> Result<Response<OpResponce>, Status> {
-    println!("Replying with: {}", comment);
-    Ok(Response::new(OpResponce {
+fn respond(code: OpResult, comment: &str) -> Result<Response<OpResponse>, Status> {
+    println!("Replying with: {comment}");
+    Ok(Response::new(OpResponse {
         result: code.into(),
         comment: comment.to_owned(),
     }))
@@ -74,317 +60,212 @@ fn respond(code: OpResult, comment: &str) -> Result<Response<OpResponce>, Status
 
 #[tonic::async_trait]
 impl Controller for ControllerService {
-    async fn auth(&self, req: Request<AuthRequest>) -> Result<Response<AuthResponce>, Status> {
-        let action = match AuthAction::from_i32(req.into_inner().action) {
-            Some(action) => action,
-            None => {
-                return Ok(Response::new(AuthResponce {
-                    result: OpResult::Fail as i32,
-                    key: Vec::new(),
-                    comment: "Invalid action".to_string(),
-                }))
-            }
-        };
-        let key = authorize_key(action);
-        let encrypted_key = encrypt(key);
-        let result = OpResult::Success.into();
-        Ok(Response::new(AuthResponce {
-            result,
-            key: encrypted_key,
-            comment: "Success".to_string(),
-        }))
-    }
-
-    async fn backup(&self, req: Request<BackupRequest>) -> Result<Response<OpResponce>, Status> {
-        let key = req.into_inner().token;
-        if !verify_key(Key {
-            key,
-            action: AuthAction::Backup,
-        }) {
-            return Err(Status::new(tonic::Code::InvalidArgument, "Invalid token"));
+    async fn backup(&self, req: Request<BackupRequest>) -> Result<Response<OpResponse>, Status> {
+        if !verify_auth(AuthAction::Backup, req.into_inner().auth, &[]) {
+            return respond(OpResult::Denied, "Invalid auth token");
         }
-        let mut state = STATE.write();
-        let result = state.backup();
-        match result {
+
+        let mut state = STATE.lock().expect("server state lock poisoned");
+        match state.backup() {
             Ok(_) => respond(OpResult::Success, "Backed up successfully"),
-            Err(download_error) => match download_error {
-                BackupError::OtherBackup => respond(OpResult::Fail, "backed up successfully"),
-                BackupError::ServerRunning => {
-                    respond(OpResult::Fail, "Back up failed, server still running")
-                }
-                BackupError::Compression => respond(
-                    OpResult::Fail,
-                    "Back up failed to compress the world folder",
-                ),
-            },
+            Err(BackupError::OtherBackup) => respond(OpResult::Fail, "Backup already in progress"),
+            Err(BackupError::ServerRunning) => respond(
+                OpResult::Fail,
+                "Backup failed because the server is running",
+            ),
+            Err(BackupError::Compression) => respond(
+                OpResult::Fail,
+                "Backup failed while compressing the world folder",
+            ),
+            Err(BackupError::Random) => respond(
+                OpResult::Fail,
+                "Backup failed while creating a random file name",
+            ),
         }
     }
 
-    async fn command(&self, req: Request<CommandRequest>) -> Result<Response<OpResponce>, Status> {
+    async fn command(&self, req: Request<CommandRequest>) -> Result<Response<OpResponse>, Status> {
         let req = req.into_inner();
-        let key = req.token;
-        if !verify_key(Key {
-            key,
-            action: AuthAction::Command,
-        }) {
-            return respond(OpResult::Denied, "Invalid token");
+        if !verify_auth(AuthAction::Command, req.auth, req.command.as_bytes()) {
+            return respond(OpResult::Denied, "Invalid auth token");
         }
-        let mut state = STATE.write();
-        let res = state.run_command(&req.command);
-        match res {
-            Err(command_error) => {
-                match command_error{
-                    CommandError::Idle => {
-                        respond(OpResult::Fail, "Server idle, command can't be run")
-                    },
-                    CommandError::Downloading=> {
-                        respond(OpResult::Fail, "Download in progress! Command can't be run")
-                    },
-                    CommandError::ProccesError => {
-                        respond(OpResult::Fail, "Error running command on procces")
-                    },
-                }
+
+        let mut state = STATE.lock().expect("server state lock poisoned");
+        match state.run_command(&req.command) {
+            Ok(_) => respond(OpResult::Success, "Command was sent to the server console"),
+            Err(CommandError::Idle) => respond(OpResult::Fail, "Server is idle"),
+            Err(CommandError::BackingUp) => {
+                respond(OpResult::Fail, "Backup in progress; command was not run")
             }
-            Ok(_) => {
-                respond(OpResult::Success, "Command ran successfully! note this does not necessarily mean the command was valid only that it's execution was attempted")
+            Err(CommandError::ProcessError) => {
+                respond(OpResult::Fail, "Error while writing to the server process")
             }
+            Err(CommandError::Empty) => respond(OpResult::Fail, "Command cannot be empty"),
+            Err(CommandError::ControlCharacters) => {
+                respond(OpResult::Denied, "Command contains control characters")
+            }
+            Err(CommandError::NotAllowed(command)) => respond(
+                OpResult::Denied,
+                &format!("Command '{command}' is not allowed by server config"),
+            ),
         }
     }
 
-    /// Request to download the world-file
-    type DownloadStream = WDLStream;
+    type DownloadStream = WdlStream;
+
     async fn download(
         &self,
         req: Request<DownloadRequest>,
     ) -> Result<Response<Self::DownloadStream>, Status> {
-        let key = req.into_inner().token;
-        if !verify_key(Key {
-            key,
-            action: AuthAction::Download,
-        }) {
-            return Err(Status::new(tonic::Code::InvalidArgument, "Invalid token"));
+        if !verify_auth(AuthAction::Download, req.into_inner().auth, &[]) {
+            return Err(Status::permission_denied("Invalid auth token"));
         }
 
-        let file = match latest_file(&CONFIG.backup_directory) {
-            Some(path) => match File::open(path) {
-                Ok(handle) => handle,
-                Err(_) => return Err(Status::not_found("No backups")),
-            },
+        let file = match latest_file(Path::new(&CONFIG.backup_directory)) {
+            Some(path) => File::open(path).map_err(|_| Status::not_found("No backups"))?,
             None => return Err(Status::not_found("No backups")),
         };
 
-        // Create iterator that yields WorldDownload
-        let wdl = match WorldDownloadIterator::new(file) {
-            Some(dl) => dl,
-            None => return Err(Status::aborted("Unable to fetch file metadata")),
-        };
-
+        let wdl = WorldDownloadIterator::new(file)
+            .ok_or_else(|| Status::aborted("Unable to fetch file metadata"))?;
         let mut stream = Box::pin(tokio_stream::iter(wdl));
 
         let (send_channel, receive_channel) = mpsc::channel(128);
         tokio::spawn(async move {
             while let Some(item) = stream.next().await {
-                match send_channel.send(Result::<_, Status>::Ok(item)).await {
-                    Ok(_) => {
-                        // item (server response) was queued to be send to client
-                    }
-                    Err(_item) => {
-                        // output_stream was build from receive_channel and both are dropped
-                        break;
-                    }
+                if send_channel
+                    .send(Result::<_, Status>::Ok(item))
+                    .await
+                    .is_err()
+                {
+                    break;
                 }
             }
-            println!("\tclient disconnected");
+            println!("client disconnected from download stream");
         });
 
-        let output_stream = ReceiverStream::new(receive_channel);
         Ok(Response::new(
-            Box::pin(output_stream) as Self::DownloadStream
+            Box::pin(ReceiverStream::new(receive_channel)) as Self::DownloadStream,
         ))
     }
 
-    /// Handle launch request
-    async fn launch(&self, req: Request<LaunchRequest>) -> Result<Response<OpResponce>, Status> {
-        let key = req.into_inner().token;
-        if !verify_key(Key {
-            key,
-            action: AuthAction::Launch,
-        }) {
-            return respond(OpResult::Denied, "Invalid Token");
+    async fn launch(&self, req: Request<LaunchRequest>) -> Result<Response<OpResponse>, Status> {
+        if !verify_auth(AuthAction::Launch, req.into_inner().auth, &[]) {
+            return respond(OpResult::Denied, "Invalid auth token");
         }
 
-        let mut state = STATE.write();
-        let res = state.launch();
-        match res {
+        let mut state = STATE.lock().expect("server state lock poisoned");
+        match state.launch() {
             Ok(_) => respond(OpResult::Success, "Launched successfully"),
-            Err(launch_error) => match launch_error {
-                LaunchError::Launch => respond(OpResult::Fail, "Failed to launch server"),
-                LaunchError::AlreadyRunning => respond(OpResult::Fail, "Server already running"),
-                LaunchError::Downloading => {
-                    respond(OpResult::Fail, "Download in progress! Can't launch")
-                }
-            },
+            Err(LaunchError::Launch) => respond(OpResult::Fail, "Failed to launch server"),
+            Err(LaunchError::AlreadyRunning) => respond(OpResult::Fail, "Server already running"),
+            Err(LaunchError::BackingUp) => {
+                respond(OpResult::Fail, "Backup in progress; cannot launch")
+            }
         }
     }
 
-    /// Handle stopping
-    async fn stop(&self, req: Request<StopRequest>) -> Result<Response<OpResponce>, Status> {
-        let key = req.into_inner().token;
-        use AuthAction;
-        if !verify_key(Key {
-            key,
-            action: AuthAction::Stop,
-        }) {
-            return respond(OpResult::Denied, "Invalid token");
+    async fn stop(&self, req: Request<StopRequest>) -> Result<Response<OpResponse>, Status> {
+        if !verify_auth(AuthAction::Stop, req.into_inner().auth, &[]) {
+            return respond(OpResult::Denied, "Invalid auth token");
         }
-        let mut state = STATE.write();
-        let res = state.stop();
-        match res {
-            Err(stop_error) => match stop_error {
-                StopError::ProccesError => respond(
-                    OpResult::Fail,
-                    "Error occurred while stopping server procces",
-                ),
-                _ => respond(OpResult::Fail, "Server already idle"),
-            },
-            Ok(_) => {
-                return respond(OpResult::Success, "Server stopped successfully");
-            }
+
+        let mut state = STATE.lock().expect("server state lock poisoned");
+        match state.stop() {
+            Ok(_) => respond(OpResult::Success, "Server stopped successfully"),
+            Err(StopError::Idle) => respond(OpResult::Fail, "Server is already idle"),
+            Err(StopError::BackingUp) => respond(OpResult::Fail, "Backup in progress"),
+            Err(StopError::ProcessError) => respond(
+                OpResult::Fail,
+                "Error occurred while stopping server process",
+            ),
         }
     }
 }
 
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Server state management using the state machine pattern
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
 #[derive(Debug)]
 enum ServerState {
     Idle,
-    Running { procces: Child },
+    Running { process: Child },
     BackingUp,
 }
 
 impl ServerState {
     fn backup(&mut self) -> Result<(), BackupError> {
-        use ServerState::*;
         match self {
-            Idle => {
-                *self = BackingUp;
-                // Compress the file
-                match Command::new("tar")
-                    .arg("-czf")
-                    .arg(format!(
-                        "{}/{}.tar.gz",
-                        &CONFIG.backup_directory,
-                        common::ran_letters(32)
-                    ))
-                    .arg("world")
-                    .spawn()
-                {
-                    Ok(mut child) => {
-                        if let Err(_) = child.wait() {
-                            return Err(BackupError::Compression);
-                        }
-                    }
-                    Err(_) => {
-                        return Err(BackupError::Compression);
-                    }
-                }
-                // remove_oldest_backup("minecraft/backups");
-                {
-                    let mut num_backups = std::fs::read_dir(&CONFIG.backup_directory)
-                        .into_iter()
-                        .flatten()
-                        .count();
-                    while num_backups > 10 {
-                        num_backups -= 1;
-                        remove_oldest_backup(&CONFIG.backup_directory);
-                    }
-                }
-                *self = Idle;
-                Ok(())
+            ServerState::Idle => {
+                *self = ServerState::BackingUp;
+                let result = create_backup();
+                *self = ServerState::Idle;
+                result
             }
-            Running { procces: _ } => Err(BackupError::ServerRunning),
-            BackingUp => Err(BackupError::OtherBackup),
+            ServerState::Running { .. } => Err(BackupError::ServerRunning),
+            ServerState::BackingUp => Err(BackupError::OtherBackup),
         }
     }
 
     fn check_stop(&mut self) {
-        if let Running { procces: c } = self {
-            let res = c.try_wait();
-            if let Ok(possible_exit_code) = res {
-                if let Some(_exit_code) = possible_exit_code {
-                    //Procces finished
-                    *self = Idle;
-                }
+        if let ServerState::Running { process } = self {
+            if matches!(process.try_wait(), Ok(Some(_))) {
+                *self = ServerState::Idle;
             }
         }
     }
 
-    fn run_command(&mut self, cmd: &str) -> Result<(), CommandError> {
+    fn run_command(&mut self, command: &str) -> Result<(), CommandError> {
+        validate_command(command)?;
+
         match self {
-            Running { procces } => {
-                let pstdin = procces.stdin.as_mut();
-                match pstdin {
-                    Some(buff) => match buff.write_all(&format!("\n{}\n", cmd).into_bytes()) {
-                        Err(_) => Err(CommandError::ProccesError),
-                        _ => Ok(()),
-                    },
-                    None => Err(CommandError::ProccesError),
-                }
+            ServerState::Running { process } => {
+                let Some(stdin) = process.stdin.as_mut() else {
+                    return Err(CommandError::ProcessError);
+                };
+
+                stdin
+                    .write_all(format!("{command}\n").as_bytes())
+                    .map_err(|_| CommandError::ProcessError)
             }
-            Idle => Err(CommandError::Idle),
-            BackingUp => Err(CommandError::Downloading),
+            ServerState::Idle => Err(CommandError::Idle),
+            ServerState::BackingUp => Err(CommandError::BackingUp),
         }
     }
 
-    /// Spawn a new java procces and store it in MINECRAFT_SERVER_STATE
     fn launch(&mut self) -> Result<(), LaunchError> {
         self.check_stop();
+
         match self {
-            Idle => {
-                let child = match Command::new("sh")
+            ServerState::Idle => {
+                let child = launch_command()
                     .stdin(Stdio::piped())
-                    // .stdout(Stdio::piped())
-                    .arg("launch.sh")
                     .spawn()
-                {
-                    Ok(child) => child,
-                    Err(_c) => return Err(LaunchError::Launch),
-                };
-                *self = Running { procces: child };
+                    .map_err(|_| LaunchError::Launch)?;
+
+                *self = ServerState::Running { process: child };
                 Ok(())
             }
-            BackingUp => Err(LaunchError::Downloading),
-            Running { procces: _ } => Err(LaunchError::AlreadyRunning),
+            ServerState::BackingUp => Err(LaunchError::BackingUp),
+            ServerState::Running { .. } => Err(LaunchError::AlreadyRunning),
         }
     }
 
-    /// Stop the running procces by entering stop into the stdin
     fn stop(&mut self) -> Result<(), StopError> {
         self.check_stop();
+
         match self {
-            Running { procces: child } => {
-                let child_input = child.stdin.as_mut();
-                match child_input {
-                    Some(buff) => {
-                        match buff.write_all(b"\nstop\n") {
-                            Err(_) => return Err(StopError::ProccesError),
-                            _ => {}
-                        };
-                        match child.wait() {
-                            Ok(_) => {}
-                            Err(_) => {}
-                        }
-                        *self = Idle;
-                        Ok(())
-                    }
-                    None => Err(StopError::ProccesError),
-                }
+            ServerState::Running { process } => {
+                let Some(stdin) = process.stdin.as_mut() else {
+                    return Err(StopError::ProcessError);
+                };
+
+                stdin
+                    .write_all(b"stop\n")
+                    .map_err(|_| StopError::ProcessError)?;
+                process.wait().map_err(|_| StopError::ProcessError)?;
+                *self = ServerState::Idle;
+                Ok(())
             }
-            BackingUp => Err(StopError::Downloading),
-            Idle => Err(StopError::Idle),
+            ServerState::BackingUp => Err(StopError::BackingUp),
+            ServerState::Idle => Err(StopError::Idle),
         }
     }
 }
@@ -392,15 +273,15 @@ impl ServerState {
 #[derive(Debug)]
 enum StopError {
     Idle,
-    Downloading,
-    ProccesError,
+    BackingUp,
+    ProcessError,
 }
 
 #[derive(Debug)]
 enum LaunchError {
     Launch,
     AlreadyRunning,
-    Downloading,
+    BackingUp,
 }
 
 #[derive(Debug)]
@@ -408,124 +289,133 @@ enum BackupError {
     ServerRunning,
     OtherBackup,
     Compression,
+    Random,
 }
 
 #[derive(Debug)]
 enum CommandError {
     Idle,
-    Downloading,
-    ProccesError,
+    BackingUp,
+    ProcessError,
+    Empty,
+    ControlCharacters,
+    NotAllowed(String),
 }
 
-lazy_static! {
-    static ref CONFIG: crate::Config = crate::config_load();
-    /// Contains the current procces of the minecraft server and it's stdin
-    static ref STATE: RwLock<ServerState> = RwLock::new(Idle);
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Security
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-lazy_static! {
-    static ref CRYPT: MagicCrypt256 = new_magic_crypt!(CONFIG.key.clone(), 256);
-    static ref SOCKET: String = CONFIG.socket.clone();
-    static ref KEY: String = CONFIG.key.clone();
-    static ref KEYS: RwLock<RollingSet<Key>> = RwLock::new(RollingSet::new(2048));
-}
-const KEY_BYTES: usize = 256;
-
-#[derive(Eq, Clone, Hash, PartialEq, Debug)]
-struct Key {
-    action: AuthAction,
-    key: Vec<u8>,
-}
-
-fn encrypt(data: Vec<u8>) -> Vec<u8> {
-    CRYPT.encrypt_bytes_to_bytes(&data)
-}
-
-/// Generate some some random bytes for authentication
-fn gen_bytes(key_bytes: usize) -> Vec<u8> {
-    let mut bytes: Vec<u8> = vec![0; key_bytes];
-    thread_rng().fill_bytes(&mut bytes[..]);
-    bytes
-}
-
-/// Create a new key to give to our client, and store it so it can be verified later
-fn authorize_key(action: AuthAction) -> Vec<u8> {
-    let mut set = KEYS.write();
-    let bytes = gen_bytes(KEY_BYTES);
-    set.insert(Key {
-        key: bytes.clone(),
-        action,
-    });
-    bytes
-}
-
-/// Check that a key has been authored by us
-fn verify_key(key: Key) -> bool {
-    let mut set = KEYS.write();
-    let res = set.remove(&key);
-    res
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Backup stuff
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-fn latest_file(dir: &str) -> Option<PathBuf> {
-    let files = match std::fs::read_dir(dir) {
-        Ok(files) => files,
-        Err(_) => return None,
-    }
-    .into_iter();
-
-    match iter_paths_with_sys_time(files).max_by_key(|t| t.1) {
-        Some(tuple) => Some(tuple.0),
-        None => None,
-    }
-}
-
-fn iter_paths_with_sys_time(
-    files: std::fs::ReadDir,
-) -> impl Iterator<Item = (PathBuf, SystemTime)> + 'static {
-    files
-        .flatten()
-        .map(|f| f.path())
-        .map(|p| {
-            let time = match std::fs::metadata(&p) {
-                Ok(metadata) => match metadata.modified() {
-                    Ok(time) => time,
-                    Err(_) => return None,
-                },
-                Err(_) => return None,
-            };
-            Some((p, time))
-        })
-        .flatten()
-}
-
-fn remove_oldest_backup(dir: &str) {
-    let files = match std::fs::read_dir(dir) {
-        Ok(files) => files,
-        Err(_) => return,
-    }
-    .into_iter();
-
-    match iter_paths_with_sys_time(files).min_by_key(|t| t.1) {
-        Some(tuple) => {
-            let _ = std::fs::remove_file(tuple.0);
-        }
-        _ => {}
+fn verify_auth(action: AuthAction, token: Option<AuthToken>, request_body: &[u8]) -> bool {
+    let Some(token) = token else {
+        return false;
     };
+
+    if token.nonce.len() != 32 || token.signature.len() != 32 {
+        return false;
+    }
+
+    if !common::verify_signed_token(&CONFIG.key, action, &token, request_body) {
+        return false;
+    }
+
+    SEEN_NONCES
+        .lock()
+        .expect("nonce cache lock poisoned")
+        .insert(token.nonce)
 }
 
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// World Download types
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+fn validate_command(command: &str) -> Result<(), CommandError> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Err(CommandError::Empty);
+    }
 
-/// Produces an iterator of WorldDownload for streaming to the client
+    if command.chars().any(|c| c.is_control()) {
+        return Err(CommandError::ControlCharacters);
+    }
+
+    let command_name = command
+        .split_whitespace()
+        .next()
+        .ok_or(CommandError::Empty)?
+        .to_ascii_lowercase();
+
+    if CONFIG
+        .allowed_commands
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(&command_name))
+    {
+        Ok(())
+    } else {
+        Err(CommandError::NotAllowed(command_name))
+    }
+}
+
+fn create_backup() -> Result<(), BackupError> {
+    let file_name = format!(
+        "{}.tar.gz",
+        common::random_letters(32).map_err(|_| BackupError::Random)?
+    );
+    let backup_path = Path::new(&CONFIG.backup_directory).join(file_name);
+
+    let status = Command::new("tar")
+        .arg("-czf")
+        .arg(&backup_path)
+        .arg("world")
+        .status()
+        .map_err(|_| BackupError::Compression)?;
+
+    if !status.success() {
+        let _ = std::fs::remove_file(&backup_path);
+        return Err(BackupError::Compression);
+    }
+
+    prune_backups(Path::new(&CONFIG.backup_directory), CONFIG.max_backups);
+    Ok(())
+}
+
+fn launch_command() -> Command {
+    let mut command = Command::new(&CONFIG.launch_command[0]);
+    command.args(&CONFIG.launch_command[1..]);
+    command
+}
+
+fn latest_file(dir: &Path) -> Option<PathBuf> {
+    backup_entries(dir)
+        .max_by_key(|(_, modified)| *modified)
+        .map(|(path, _)| path)
+}
+
+fn prune_backups(dir: &Path, max_backups: usize) {
+    let mut entries: Vec<_> = backup_entries(dir).collect();
+    entries.sort_by_key(|(_, modified)| *modified);
+
+    while entries.len() > max_backups {
+        if let Some((path, _)) = entries.first() {
+            let _ = std::fs::remove_file(path);
+        }
+        entries.remove(0);
+    }
+}
+
+fn backup_entries(dir: &Path) -> impl Iterator<Item = (PathBuf, SystemTime)> {
+    let entries = std::fs::read_dir(dir).into_iter().flatten();
+
+    entries.filter_map(|entry| {
+        let entry = entry.ok()?;
+        let file_type = entry.file_type().ok()?;
+        if !file_type.is_file() {
+            return None;
+        }
+
+        let path = entry.path();
+        let file_name = path.file_name()?.to_str()?;
+        if !file_name.ends_with(".tar.gz") {
+            return None;
+        }
+
+        let modified = entry.metadata().ok()?.modified().ok()?;
+        Some((path, modified))
+    })
+}
+
 struct WorldDownloadIterator {
     file_reader: BufReader<File>,
     error: bool,
@@ -535,12 +425,10 @@ struct WorldDownloadIterator {
 
 impl WorldDownloadIterator {
     fn new(file: File) -> Option<Self> {
+        let size = file.metadata().ok()?.len() as usize;
+
         Some(Self {
-            size: match file.metadata() {
-                Ok(data) => data,
-                Err(_) => return None,
-            }
-            .len() as usize,
+            size,
             file_reader: BufReader::with_capacity(1024 * 1024, file),
             read: 0,
             error: false,
@@ -548,8 +436,7 @@ impl WorldDownloadIterator {
     }
 }
 
-// bruh
-type WDLStream = Pin<Box<dyn Stream<Item = Result<WorldDownload, Status>> + Send>>;
+type WdlStream = Pin<Box<dyn Stream<Item = Result<WorldDownload, Status>> + Send>>;
 
 impl Iterator for WorldDownloadIterator {
     type Item = WorldDownload;
@@ -558,57 +445,155 @@ impl Iterator for WorldDownloadIterator {
         if self.error {
             return None;
         }
-        let bytes: Vec<u8> = match self.file_reader.fill_buf() {
-            Ok(buff) => buff.to_vec(),
+
+        let bytes = match self.file_reader.fill_buf() {
+            Ok(buffer) => buffer.to_vec(),
             Err(_) => {
                 self.error = true;
                 return Some(WorldDownload {
                     result: OpResult::Fail.into(),
                     size: self.size as u64,
-                    comment: format!("Download failed"),
-                    data: vec![],
+                    comment: "Download failed".to_owned(),
+                    data: Vec::new(),
                 });
             }
         };
+
         self.file_reader.consume(bytes.len());
         self.read += bytes.len();
-        let progress = (self.read as f64 / self.size as f64 * 100.) as u64;
-        if !bytes.is_empty() {
-            Some(WorldDownload {
-                result: OpResult::Success.into(),
-                size: self.size as u64,
-                comment: format!("Download progress: {progress}%"),
-                data: bytes,
-            })
-        } else {
-            None
+
+        if bytes.is_empty() {
+            return None;
         }
+
+        let progress = if self.size == 0 {
+            100
+        } else {
+            (self.read as f64 / self.size as f64 * 100.) as u64
+        };
+
+        Some(WorldDownload {
+            result: OpResult::Success.into(),
+            size: self.size as u64,
+            comment: format!("Download progress: {progress}%"),
+            data: bytes,
+        })
     }
 }
 
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Config
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// Contains config info
-#[derive(serde_derive::Deserialize, Debug)]
+#[derive(Debug, Deserialize)]
 struct Config {
-    /// Working directory of minecraft server
-    minecraft_directory: String,
-    /// Where to store backups relative to minecraft dir
-    backup_directory: String,
-    /// Clients need to have this to authenticate their actions
+    minecraft_directory: PathBuf,
+    backup_directory: PathBuf,
     key: String,
-    /// Service runs from this socket
     socket: String,
+    #[serde(default = "default_launch_command")]
+    launch_command: Vec<String>,
+    #[serde(default = "default_allowed_commands")]
+    allowed_commands: Vec<String>,
+    #[serde(default = "default_max_backups")]
+    max_backups: usize,
 }
 
-/// Load the config file and parse it into a convenient data structure
-///
-/// Panics if the config file couldn't be loaded or parsed
-///
-fn config_load() -> Config {
-    let bytes = std::fs::read("mcsc_server.toml").expect("Unable to load config file");
-    let config = std::str::from_utf8(&bytes).expect("Config file encoding error");
-    toml::from_str(&config).expect("Unable to parse config, (syntax error)")
+impl Config {
+    fn load() -> Result<Self, Box<dyn std::error::Error>> {
+        let bytes = std::fs::read("mcsc_server.toml")?;
+        let text = std::str::from_utf8(&bytes)?;
+        Ok(toml::from_str(text)?)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.key.len() < 32 {
+            return Err("key must be at least 32 characters".to_owned());
+        }
+
+        let lower_key = self.key.to_ascii_lowercase();
+        if lower_key.contains("change-this")
+            || lower_key.contains("replace-with")
+            || lower_key.contains("who was in paris")
+        {
+            return Err("key must be changed from the example value".to_owned());
+        }
+
+        if self.launch_command.is_empty() {
+            return Err("launch_command must contain at least one item".to_owned());
+        }
+
+        if self.max_backups == 0 {
+            return Err("max_backups must be greater than zero".to_owned());
+        }
+
+        Ok(())
+    }
+}
+
+fn default_launch_command() -> Vec<String> {
+    vec!["sh".to_owned(), "launch.sh".to_owned()]
+}
+
+fn default_allowed_commands() -> Vec<String> {
+    vec![
+        "list".to_owned(),
+        "say".to_owned(),
+        "save-all".to_owned(),
+        "whitelist".to_owned(),
+    ]
+}
+
+fn default_max_backups() -> usize {
+    10
+}
+
+#[derive(Debug)]
+struct NonceCache {
+    capacity: usize,
+    order: VecDeque<Vec<u8>>,
+    seen: HashSet<Vec<u8>>,
+}
+
+impl NonceCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            order: VecDeque::with_capacity(capacity),
+            seen: HashSet::with_capacity(capacity),
+        }
+    }
+
+    fn insert(&mut self, nonce: Vec<u8>) -> bool {
+        if self.seen.contains(&nonce) {
+            return false;
+        }
+
+        while self.order.len() >= self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.seen.remove(&oldest);
+            }
+        }
+
+        self.seen.insert(nonce.clone());
+        self.order.push_back(nonce);
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nonce_cache_rejects_replay() {
+        let mut cache = NonceCache::new(2);
+        assert!(cache.insert(vec![1]));
+        assert!(!cache.insert(vec![1]));
+    }
+
+    #[test]
+    fn nonce_cache_evicts_oldest_nonce() {
+        let mut cache = NonceCache::new(2);
+        assert!(cache.insert(vec![1]));
+        assert!(cache.insert(vec![2]));
+        assert!(cache.insert(vec![3]));
+        assert!(cache.insert(vec![1]));
+    }
 }
